@@ -26,6 +26,10 @@ define('WICKET_REPORTER_TRANSIENT_PREFIX', 'wicket_reporter_');
 // No Wicket/WP calls at file level — each class does nothing until called.
 require_once WICKET_REPORTER_PLUGIN_DIR . 'includes/class-reporter-log.php';
 require_once WICKET_REPORTER_PLUGIN_DIR . 'includes/class-reporter-settings.php';
+require_once WICKET_REPORTER_PLUGIN_DIR . 'includes/class-reporter-timer.php';
+require_once WICKET_REPORTER_PLUGIN_DIR . 'includes/class-reporter-rest.php';
+
+add_action('rest_api_init', ['Reporter_Rest', 'register_routes']);
 
 // Register the settings section in the Wicket Integrations tab.
 // Same wicket_settings_tabs pattern as OSL_Limiter / WicketGuestPaymentConfig.

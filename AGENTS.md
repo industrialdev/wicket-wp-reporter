@@ -20,10 +20,12 @@ composer version-bump  # do not run manually except to preview — see Release P
 
 ```
 wicket-wp-reporter/
-├── wicket-wp-reporter.php          # Entry point: constants, hooks, admin_post_ handler wiring
+├── wicket-wp-reporter.php          # Entry point: constants, hooks, rest_api_init wiring
 ├── includes/
-│   ├── class-reporter-settings.php # Settings section, Generate-key button, uninstall
+│   ├── class-reporter-settings.php # Settings section, key generation/reset, uninstall
 │   ├── class-reporter-log.php      # Thin wrapper over Wicket()->log(), source = 'wicket-reporter'
+│   ├── class-reporter-rest.php     # GET wicket-reporter/v1/status: auth, rate limit, response
+│   ├── class-reporter-timer.php    # Per-request collector timing -> one audit log line
 │   └── Integrations/               # One adapter class per integration (memberships, WooCommerce)
 ├── docs/engineering/
 │   └── release-automation.md       # Stub — canonical doc lives in wicket-atlas
@@ -33,22 +35,34 @@ wicket-wp-reporter/
 
 ### Boot sequence
 
-1. **File load** (`wicket-wp-reporter.php`) — constants defined, `Reporter_Log`/`Reporter_Settings` classes required, settings filters registered (`wicket_settings_tabs`, `wicket_settings_tab_int`), the `admin_post_wicket_reporter_generate_key` action registered.
+1. **File load** (`wicket-wp-reporter.php`) — constants defined, `Reporter_Log`/`Reporter_Settings`/`Reporter_Timer`/`Reporter_Rest` classes required, settings filters registered (`wicket_settings_tabs`, `wicket_settings_tab_int`), the Reset-key GET link handled via `admin_init`, and the REST route registered on `rest_api_init`.
 2. **`admin_init`** — checks `function_exists('Wicket')`; if base-plugin isn't active, deactivates this plugin and shows an admin notice. This plugin has no working state without base-plugin.
 3. Settings section renders inside the existing Wicket → Integrations tab (not a new top-level page) — same `wicket_settings_tabs` pattern as `wicket-wp-woo-order-status-limits` and `wicket-wp-guest-checkout`.
 
 ### API key generation — deliberately outside the settings-save pipeline
 
-The Generate/Regenerate Key button is a **custom-rendered field** (`Reporter_Settings::render_api_key_field`), not a normal WPSettings option value — the vendored `jeffreyvanrossum/wp-settings` library has no button/action option type. The button posts to `admin-post.php?action=wicket_reporter_generate_key`, handled by `Reporter_Settings::handle_generate_key`, entirely separate from the tab's own Save Changes submit. This matters: a click on Generate Key must not be silently discarded or overwritten by an unrelated settings-form submit on the same page.
+The API key field (`Reporter_Settings::render_api_key_field`) is a **custom-rendered field**, not a normal WPSettings option value — only the key's hash is ever WPSettings-managed-adjacent storage; the real value lives in its own standalone `wicket_reporter_api_key_hash` option. Reset is a plain nonce-protected GET link handled by `Reporter_Settings::maybe_handle_reset()` on `admin_init`, entirely separate from the tab's own Save Changes submit.
 
 - Raw key: `wp_generate_password(48, false, false)`.
 - Stored: only its hash, via `wp_hash_password()`/`wp_check_password()` (WordPress's own password-hashing pair — explicitly documented as safe to use for non-user-password values, not a misuse here).
-- Shown once: flashed via a 60-second, current-user-scoped transient, read and deleted in the same `admin_notices` request — a page refresh never shows the raw key twice.
+- Shown once: flashed via a 60-second, current-user-scoped transient, read and deleted in the same `admin_notices` request — a page refresh never shows the raw key twice. Afterward the field shows a masked placeholder, never the real value.
 - Regenerating immediately invalidates the previous key (single stored hash, no key history).
+
+### Enabled / environment-override settings
+
+`wicket_reporter_enabled` and `wicket_reporter_environment_override` are normal WPSettings-managed checkbox/select fields — **not** standalone wp_options rows. WPSettings stores one aggregate option (`wicket_settings`) for the whole Wicket settings page, keyed by field name. Read these at runtime with `wicket_get_option('wicket_reporter_enabled')` / `wicket_get_option('wicket_reporter_environment_override')` (base-plugin helper), never `get_option()` directly.
+
+### REST endpoint (T2)
+
+`Reporter_Rest::register_routes()` registers `GET wicket-reporter/v1/status`. `check_permission()` runs, in order: (1) disabled check via `wicket_get_option('wicket_reporter_enabled')` → 403 if off, (2) header-only Bearer token vs the stored hash → 401 if missing/invalid, (3) per-key transient rate limit → 429 if exceeded. `handle_status()` builds the response, wrapping each collector section in `Reporter_Timer::time()`.
+
+### Performance audit log
+
+`Reporter_Timer` times each collector section wrapped in `Reporter_Timer::time($name, $callable)` during a `handle_status()` call, then logs **one** summary line at the end (`Reporter_Log::info('Status generation complete', ['total_ms' => ..., 'collectors' => [['name' => ..., 'ms' => ...], ...]])`) — a single write per request regardless of collector count, so it stays a cheap on-the-fly performance snapshot rather than a per-collector logging burden. A separate "Status generation requested" line logs at the very start of the request.
 
 ### Uninstall vs. deactivate
 
-`Reporter_Settings::on_uninstall()` (registered via `register_uninstall_hook`, not a deactivation hook) removes the stored API key hash, the enabled/environment-override options, and any of this plugin's transients. Deactivating and reactivating must **never** force key regeneration — only a full uninstall clears the key.
+`Reporter_Settings::on_uninstall()` (registered via `register_uninstall_hook`, not a deactivation hook) removes the stored API key hash option, unsets the `enabled`/`environment_override` keys from the shared `wicket_settings` option (without deleting that option itself — other plugins' settings live in it too), and removes any of this plugin's transients. Deactivating and reactivating must **never** force key regeneration — only a full uninstall clears the key.
 
 ### Integration adapters (T6/T7/T11/T12 — not all built yet)
 
@@ -62,9 +76,7 @@ The Generate/Regenerate Key button is a **custom-rendered field** (`Reporter_Set
 WICKET_REPORTER_VERSION                    // Plugin version string
 WICKET_REPORTER_PLUGIN_DIR                 // Absolute path to plugin directory (trailing slash)
 WICKET_REPORTER_PLUGIN_URL                 // URL to plugin directory (trailing slash)
-WICKET_REPORTER_OPTION_ENABLED             // 'wicket_reporter_enabled'
 WICKET_REPORTER_OPTION_API_KEY_HASH        // 'wicket_reporter_api_key_hash'
-WICKET_REPORTER_OPTION_ENV_OVERRIDE        // 'wicket_reporter_environment_override'
 WICKET_REPORTER_TRANSIENT_PREFIX           // 'wicket_reporter_'
 ```
 
