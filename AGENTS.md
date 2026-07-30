@@ -26,6 +26,8 @@ wicket-wp-reporter/
 │   ├── class-reporter-log.php      # Thin wrapper over Wicket()->log(), source = 'wicket-reporter'
 │   ├── class-reporter-rest.php     # GET wicket-reporter/v1/status: auth, rate limit, response
 │   ├── class-reporter-timer.php    # Per-request collector timing -> one audit log line
+│   ├── class-reporter-composer.php # T4: composer.lock/json parser -> composer[] section
+│   ├── class-reporter-plugins.php  # T3: plugin/theme collectors -> plugins[]/themes[] sections
 │   └── Integrations/               # One adapter class per integration (memberships, WooCommerce)
 ├── docs/engineering/
 │   └── release-automation.md       # Stub — canonical doc lives in wicket-atlas
@@ -55,6 +57,27 @@ The API key field (`Reporter_Settings::render_api_key_field`) is a **custom-rend
 ### REST endpoint (T2)
 
 `Reporter_Rest::register_routes()` registers `GET wicket-reporter/v1/status`. `check_permission()` runs, in order: (1) disabled check via `wicket_get_option('wicket_reporter_enabled')` → 403 if off, (2) header-only Bearer token vs the stored hash → 401 if missing/invalid, (3) per-key transient rate limit → 429 if exceeded. `handle_status()` builds the response, wrapping each collector section in `Reporter_Timer::time()`.
+
+### Composer, plugin, and theme collectors (T3, T4)
+
+Collector order matters: `Reporter_Composer::collect()` (T4) runs **before** `Reporter_Plugins::collect_plugins()`/`collect_themes()` (T3), since T3 cross-references T4's parsed output by directory name to derive `installType`/`updateSource` per plugin/theme — see the plan's field-sourcing notes. Every collector call in `handle_status()` goes through `Reporter_Rest::run_collector()`, which wraps it in both `Reporter_Timer::time()` (audit log) and a try/catch (Endpoint resilience — a thrown exception never 500s the whole response; the section falls back to empty/null and the failure is appended to `collectorErrors[]`).
+
+`Reporter_Composer::collect()` reads `composer.lock`/`composer.json` directly (`json_decode`, no `shell_exec`, no composer binary dependency), filtered to `wordpress-plugin`/`wordpress-theme`/`wordpress-muplugin`/`wordpress-core` types only — a real fleet `composer.lock` carries dozens of transitive PHP libraries (Carbon, Doctrine, etc.) that aren't WordPress-installable units and are dropped as noise.
+
+`composer[]`, `plugins[]`, and `themes[]` in the response are each `{ _meta: {...}, items: [...] }` objects, not bare arrays — `_meta.count` on all three, plus `_meta.activeCount` on `plugins`/`themes`. `latestVersion`/`updateAvailable` are **omitted entirely** from `plugins[].items[]` and `wordpress{}`, not set to `null` — M1 has no external version-lookup (that's M2/T9), and a `null` here would read ambiguously close to "no update available" under a naive falsy check in client code.
+
+#### Field value reference
+
+| Field | Values | Meaning |
+|---|---|---|
+| `plugins/themes .items[].status` | `active`, `inactive` | Whether WordPress currently has it active. |
+| `plugins/themes .items[].installType` | `composer`, `wordpress`, `manual` | `composer` = matched a `composer.lock` entry by directory name. `wordpress` = no composer match, but a wordpress.org-style `readme.txt` header found. `manual` = neither. |
+| `plugins/themes .items[].updateSource` | `git`, `satispress`, `wordpress-org`, `unknown` | Where M2/T9 checks for a newer version. `git` = Wicket-authored (`industrialdev/*` namespace, or a direct git URL). `satispress` = licensed package (`wicketpress/*`). `wordpress-org` = public wordpress.org directory (`wp-plugin/*` or `wpackagist-plugin/*`/`wpackagist-theme/*` — both proxy the same source). `unknown` = no match. |
+| `composer.items[].type` | `wordpress-plugin`, `wordpress-theme`, `wordpress-muplugin`, `wordpress-core` | The only composer package types this plugin reports. |
+| `site.environment` | `production`, `staging`, `development`, `sandbox` | From `wp_get_environment_type()` unless the settings override is set. |
+| `collectorErrors[].collector` | `composer`, `plugins`, `themes`, `memberships`, `woocommerce`, `wordpress`, `site` | Matches whichever collector/adapter slug threw. |
+
+Full detail and worked JSON examples: the plan's "Field value reference" section (linked above).
 
 ### Performance audit log
 
