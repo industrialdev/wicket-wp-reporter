@@ -203,11 +203,23 @@ class Reporter_Rest
             'site'      => Reporter_Timer::time('site', static fn () => self::get_site_info()),
             // latestVersion/updateAvailable deliberately omitted, not null —
             // see the comment in Reporter_Plugins::collect_plugins() for why.
-            'wordpress' => Reporter_Timer::time('wordpress', static fn () => [
-                'version'     => get_bloginfo('version'),
-                'totalUsers'  => null,
-                'usersByRole' => [],
-            ]),
+            'wordpress' => Reporter_Timer::time('wordpress', static function () {
+                // count_users() is WP core's own cheap-count API — one
+                // query, no per-user iteration. Nested under its own
+                // metrics{} rather than flat on wordpress{} — same
+                // identity-vs-usage split the integration adapters use,
+                // since version/latestVersion/updateAvailable are a
+                // different kind of field than usage counts.
+                $user_counts = count_users();
+
+                return [
+                    'version' => get_bloginfo('version'),
+                    'metrics' => [
+                        'totalUsers'  => $user_counts['total_users'],
+                        'usersByRole' => $user_counts['avail_roles'],
+                    ],
+                ];
+            }),
             'composer'         => [
                 '_meta' => ['count' => count($composer_packages)],
                 'items' => $composer_packages,

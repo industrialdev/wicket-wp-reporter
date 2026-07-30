@@ -11,13 +11,10 @@ defined('ABSPATH') || exit;
  */
 class Reporter_Integrations
 {
-    /**
-     * TODO: register the WooCommerce adapter here once built (T12).
-     *
-     * @var array<int, class-string<Reporter_Integration_Adapter>>
-     */
+    /** @var array<int, class-string<Reporter_Integration_Adapter>> */
     private static array $adapters = [
         Memberships_Adapter::class,
+        Woocommerce_Adapter::class,
     ];
 
     /**

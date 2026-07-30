@@ -15,6 +15,19 @@ to `null` — this plugin has no external version-lookup (that's a separate
 service's job), and a `null` here would read ambiguously close to "no
 update available" under a naive falsy check in client code.
 
+`wordpress.metrics.totalUsers`/`usersByRole` come from one `count_users()`
+call — WP core's own cheap-count API, no per-user iteration. Nested under
+`wordpress.metrics{}` rather than flat on `wordpress{}`, mirroring the
+integration adapters' `metrics`/`configuration` split: `version`/
+`latestVersion`/`updateAvailable` are identity/version fields, `metrics`
+is usage counts — a different kind of data, even though both live under
+the always-present `wordpress{}` (core isn't optional the way an
+integration adapter's target plugin is, so it doesn't move under
+`integrations{}`, just gets its own `metrics` sub-object). `usersByRole`
+is `count_users()['avail_roles']` passed through as-is: a map of role slug
+to count, where a multi-role user is counted once per role they hold, not
+once overall (so summing `usersByRole`'s values can exceed `totalUsers`).
+
 ## Field value reference
 
 | Field | Values | Meaning |
@@ -22,6 +35,16 @@ update available" under a naive falsy check in client code.
 | `plugins/themes .items[].status` | `active`, `inactive` | Whether WordPress currently has it active. |
 | `plugins/themes .items[].installType` | `composer`, `wordpress`, `manual` | `composer` = matched a `composer.lock` entry by directory name. `wordpress` = no composer match, but a wordpress.org-style `readme.txt` header found. `manual` = neither. |
 | `plugins/themes .items[].updateSource` | `git`, `satispress`, `wordpress-org`, `unknown` | Where the fleet-monitor dashboard checks for a newer version. `git` = Wicket-authored (`industrialdev/*` namespace, or a direct git URL). `satispress` = licensed package (`wicketpress/*`). `wordpress-org` = public wordpress.org directory (`wp-plugin/*` or `wpackagist-plugin/*`/`wpackagist-theme/*` — both proxy the same source). `unknown` = no match. |
+
+**Known limitation**: a theme that's Wicket-authored but not
+composer-managed (e.g. `wicket-wp-theme`, `wicket-child` — installed
+directly in `web/app/themes/`, no matching `composer.lock` entry) reports
+`installType: manual`/`updateSource: unknown`, even though it genuinely is
+a Wicket git repo. `git`-detection currently only runs off a composer
+package's namespace (T4's `is_wicket_git_package()`); there's no fallback
+detection path for a non-composer-managed Wicket theme yet. Not a bug —
+just a real gap in current coverage, left open rather than adding an ad
+hoc detection heuristic outside any scoped task.
 | `composer.items[].type` | `wordpress-plugin`, `wordpress-theme`, `wordpress-muplugin`, `wordpress-core` | The only composer package types this plugin reports. |
 | `site.environment` | `production`, `staging`, `development`, `sandbox` | From `wp_get_environment_type()` unless the settings override is set. |
 | `collectorErrors[].collector` | `composer`, `plugins`, `themes`, `integrations`, `integrations.memberships`, `integrations.woocommerce`, `wordpress`, `site` | `composer`/`plugins`/`themes`/`wordpress`/`site` match a top-level collector throwing. `integrations` matches the whole adapter registry failing to load (rare — e.g. a fatal in `Reporter_Integrations::collect()` itself). `integrations.<slug>` matches one specific adapter throwing — every other adapter's data still returns, per the per-adapter isolation in `Reporter_Integrations::collect()`. |
@@ -184,5 +207,51 @@ queries per membership, no outbound calls of any kind.
       }
     ]
   }
+}
+```
+
+### `integrations.woocommerce` (`Woocommerce_Adapter`)
+
+Uses WooCommerce's own counting APIs throughout, never a raw query —
+`wc_orders_count()` already abstracts HPOS vs. legacy posts-table storage
+internally and is itself WC-cached, so the adapter doesn't branch on
+storage mode. `configuration` is always empty for this adapter — there's
+no config/tier-style setup to report, unlike memberships.
+
+#### `metrics` — pure counts
+
+| Field | Type | Meaning |
+|---|---|---|
+| `orders` | object | One key per order status this site actually uses (from `wc_get_order_statuses()`, not a hardcoded list), each value the count from `wc_orders_count()` for that status. |
+| `users.total` | int | `count_users()['total_users']` — every WP user account, not filtered to WooCommerce customers specifically. |
+| `users.byRole` | object | `count_users()['avail_roles']` passed through as-is — role slug to count. A multi-role user is counted once per role, not once per person, so summing these values can exceed `users.total`. Same shape WooCommerce's own `WC_Tracker::get_user_counts()` reports; there's no WC-sanctioned way to derive a single "customers" figure from role counts without double- or under-counting multi-role users, so this adapter doesn't attempt one. |
+
+#### Example `integrations.woocommerce` response fragment
+
+```json
+{
+  "available": true,
+  "active": true,
+  "metrics": {
+    "orders": {
+      "pending": 6,
+      "processing": 18,
+      "on-hold": 0,
+      "completed": 9,
+      "cancelled": 0,
+      "refunded": 0,
+      "failed": 0,
+      "checkout-draft": 4
+    },
+    "users": {
+      "total": 13,
+      "byRole": {
+        "administrator": 8,
+        "subscriber": 3,
+        "customer": 2
+      }
+    }
+  },
+  "configuration": {}
 }
 ```

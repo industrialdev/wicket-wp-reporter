@@ -31,6 +31,7 @@ require_once WICKET_REPORTER_PLUGIN_DIR . 'includes/class-reporter-composer.php'
 require_once WICKET_REPORTER_PLUGIN_DIR . 'includes/class-reporter-plugins.php';
 require_once WICKET_REPORTER_PLUGIN_DIR . 'includes/Integrations/interface-integration-adapter.php';
 require_once WICKET_REPORTER_PLUGIN_DIR . 'includes/Integrations/class-memberships-adapter.php';
+require_once WICKET_REPORTER_PLUGIN_DIR . 'includes/Integrations/class-woocommerce-adapter.php';
 require_once WICKET_REPORTER_PLUGIN_DIR . 'includes/class-reporter-integrations.php';
 require_once WICKET_REPORTER_PLUGIN_DIR . 'includes/class-reporter-rest.php';
 
