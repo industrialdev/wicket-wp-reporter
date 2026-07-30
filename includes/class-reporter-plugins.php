@@ -1,0 +1,170 @@
+<?php
+
+declare(strict_types=1);
+
+defined('ABSPATH') || exit;
+
+/**
+ * T3 — plugin/theme/core collectors.
+ *
+ * Runs after Reporter_Composer (T4) and consumes its parsed output directly
+ * to derive installType/updateSource per package — see the plan's field-
+ * sourcing notes. Standard WP core enumeration only (get_plugins(),
+ * wp_get_themes()), no raw filesystem scanning beyond what those already do.
+ */
+class Reporter_Plugins
+{
+    /**
+     * @param array<int, array<string, mixed>> $composer_packages T4's parsed composer[] entries.
+     * @return array<int, array<string, mixed>>
+     */
+    public static function collect_plugins(array $composer_packages): array
+    {
+        if (!function_exists('get_plugins')) {
+            require_once ABSPATH . 'wp-admin/includes/plugin.php';
+        }
+
+        $by_directory = self::index_composer_packages_by_directory($composer_packages);
+        $entries = [];
+
+        foreach (get_plugins() as $file => $data) {
+            $slug = self::slug_from_file($file);
+            $match = $by_directory[$slug] ?? null;
+
+            $entries[] = [
+                'file'            => $file,
+                'slug'            => $slug,
+                'name'            => (string) ($data['Name'] ?? $slug),
+                'version'         => (string) ($data['Version'] ?? ''),
+                'status'          => is_plugin_active($file) ? 'active' : 'inactive',
+                'installType'     => null !== $match ? 'composer' : self::detect_manual_install_type($slug),
+                'composerPackage' => $match['name'] ?? null,
+                'updateSource'    => null !== $match
+                    ? $match['updateSource']
+                    : self::detect_manual_update_source($slug),
+                // latestVersion/updateAvailable deliberately omitted, not
+                // set to null — M1 has no external version-lookup (see the
+                // plan's Out of scope section), so it genuinely doesn't
+                // know this state. A null value reads ambiguously close to
+                // "no update available" in naive client code (falsy check);
+                // omitting the key is an unambiguous "unknown here." M2
+                // adds these keys itself once it has real data.
+            ];
+        }
+
+        return $entries;
+    }
+
+    /**
+     * @param array<int, array<string, mixed>> $composer_packages
+     * @return array<int, array<string, mixed>>
+     */
+    public static function collect_themes(array $composer_packages): array
+    {
+        $by_directory = self::index_composer_packages_by_directory($composer_packages);
+        $active_stylesheet = get_option('stylesheet');
+        $entries = [];
+
+        foreach (wp_get_themes() as $stylesheet => $theme) {
+            $match = $by_directory[$stylesheet] ?? null;
+
+            $entries[] = [
+                'stylesheet'      => $stylesheet,
+                'template'        => $theme->get_template(),
+                'name'            => (string) $theme->get('Name'),
+                'version'         => (string) $theme->get('Version'),
+                'status'          => $stylesheet === $active_stylesheet ? 'active' : 'inactive',
+                'installType'     => null !== $match ? 'composer' : self::detect_manual_install_type($stylesheet, true),
+                'composerPackage' => $match['name'] ?? null,
+                'updateSource'    => null !== $match
+                    ? $match['updateSource']
+                    : self::detect_manual_update_source($stylesheet, true),
+                // See the comment in collect_plugins() — omitted, not null.
+            ];
+        }
+
+        return $entries;
+    }
+
+    /**
+     * Keys T4's composer[] entries by the directory name Composer would
+     * have installed them under, so a plugin/theme folder name looks itself
+     * up directly — one pass over composer_packages, not one lookup per
+     * plugin.
+     *
+     * @param array<int, array<string, mixed>> $composer_packages
+     * @return array<string, array<string, mixed>>
+     */
+    private static function index_composer_packages_by_directory(array $composer_packages): array
+    {
+        $index = [];
+
+        foreach ($composer_packages as $package) {
+            if (empty($package['name']) || !in_array($package['type'] ?? '', ['wordpress-plugin', 'wordpress-theme', 'wordpress-muplugin'], true)) {
+                continue;
+            }
+
+            $directory = Reporter_Composer::package_directory_name((string) $package['name']);
+            $index[$directory] = [
+                'name'         => $package['name'],
+                'updateSource' => self::update_source_from_entry($package),
+            ];
+        }
+
+        return $index;
+    }
+
+    /**
+     * T4's composer[] entries already carry enough to classify updateSource
+     * without re-parsing the lock file: a `repository` key present means a
+     * Wicket git package (see Reporter_Composer::build_entry); otherwise
+     * fall back to the composer package name's own vendor prefix.
+     */
+    private static function update_source_from_entry(array $package): string
+    {
+        if (isset($package['repository'])) {
+            return 'git';
+        }
+
+        $name = (string) ($package['name'] ?? '');
+
+        if (str_starts_with($name, 'wicketpress/')) {
+            return 'satispress';
+        }
+
+        if (str_starts_with($name, 'wp-plugin/')
+            || str_starts_with($name, 'wpackagist-plugin/')
+            || str_starts_with($name, 'wpackagist-theme/')
+        ) {
+            return 'wordpress-org';
+        }
+
+        return 'unknown';
+    }
+
+    private static function slug_from_file(string $plugin_file): string
+    {
+        $slug = dirname($plugin_file);
+
+        return '.' === $slug ? basename($plugin_file, '.php') : $slug;
+    }
+
+    /**
+     * No composer match: presence of a readme.txt with a wordpress.org-style
+     * header means a manually-installed wordpress.org plugin/theme; anything
+     * else is a fully manual install with an unknown source.
+     */
+    private static function detect_manual_install_type(string $slug, bool $is_theme = false): string
+    {
+        $base_dir = $is_theme
+            ? get_theme_root() . '/' . $slug
+            : WP_PLUGIN_DIR . '/' . $slug;
+
+        return is_readable($base_dir . '/readme.txt') ? 'wordpress' : 'manual';
+    }
+
+    private static function detect_manual_update_source(string $slug, bool $is_theme = false): string
+    {
+        return 'wordpress' === self::detect_manual_install_type($slug, $is_theme) ? 'wordpress-org' : 'unknown';
+    }
+}

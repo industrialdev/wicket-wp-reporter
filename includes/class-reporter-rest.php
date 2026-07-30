@@ -124,13 +124,14 @@ class Reporter_Rest
     /**
      * Builds the status response.
      *
-     * Collector sections (composer/plugins/themes/integrations/wordpress
-     * counts) are empty placeholders here — T3/T4/T6/T7/T11/T12 fill them
-     * in, each wrapped in Reporter_Timer::time() the same way `site` and
-     * `wordpress` already are below, so every collector's cost shows up in
-     * the one end-of-request audit log line without any extra wiring.
-     * schemaVersion/cache/monitor are real from day one and don't need
-     * timing — they're not collectors, just static/derived values.
+     * Collector order matters: composer (T4) must run before plugins/themes
+     * (T3) since T3 cross-references T4's parsed output to derive
+     * installType/updateSource — see the plan's field-sourcing notes.
+     * integrations{} (T6/T7/T11/T12) stays an empty placeholder for now.
+     * Every collector is individually wrapped, both in Reporter_Timer::time()
+     * (audit log) and try/catch (Endpoint resilience — one failing collector
+     * never 500s the whole response; its section is omitted/empty and the
+     * failure appended to collectorErrors[]).
      */
     public static function handle_status(WP_REST_Request $request): WP_REST_Response
     {
@@ -138,6 +139,17 @@ class Reporter_Rest
 
         $now = gmdate('Y-m-d\TH:i:s\Z');
         $cache_ttl = 8 * HOUR_IN_SECONDS;
+        $collector_errors = [];
+
+        $composer_result = self::run_collector('composer', $collector_errors, static fn () => Reporter_Composer::collect());
+        $composer_packages = $composer_result['packages'] ?? [];
+
+        if (null !== ($composer_result['error'] ?? null)) {
+            $collector_errors[] = ['collector' => 'composer', 'message' => $composer_result['error']];
+        }
+
+        $plugins = self::run_collector('plugins', $collector_errors, static fn () => Reporter_Plugins::collect_plugins($composer_packages)) ?? [];
+        $themes = self::run_collector('themes', $collector_errors, static fn () => Reporter_Plugins::collect_themes($composer_packages)) ?? [];
 
         $body = [
             'schemaVersion' => 1,
@@ -147,24 +159,39 @@ class Reporter_Rest
                 'expiresAt'   => gmdate('Y-m-d\TH:i:s\Z', time() + $cache_ttl),
             ],
             'monitor' => [
-                'version'       => WICKET_REPORTER_VERSION,
-                'capabilities'  => ['wordpress', 'plugins', 'themes', 'composer'],
-                'generationMs'  => null, // filled in below, after Reporter_Timer::finish_request()
+                'version'      => WICKET_REPORTER_VERSION,
+                'capabilities' => ['wordpress', 'plugins', 'themes', 'composer'],
+                'generationMs' => null, // filled in below, after Reporter_Timer::finish_request()
             ],
             'site'      => Reporter_Timer::time('site', static fn () => self::get_site_info()),
+            // latestVersion/updateAvailable deliberately omitted, not null —
+            // see the comment in Reporter_Plugins::collect_plugins() for why.
             'wordpress' => Reporter_Timer::time('wordpress', static fn () => [
-                'version'         => get_bloginfo('version'),
-                'latestVersion'   => null,
-                'updateAvailable' => null,
-                'totalUsers'      => null,
-                'usersByRole'     => [],
+                'version'     => get_bloginfo('version'),
+                'totalUsers'  => null,
+                'usersByRole' => [],
             ]),
-            'composer'         => [],
-            'plugins'          => [],
-            'themes'           => [],
+            'composer'         => [
+                '_meta' => ['count' => count($composer_packages)],
+                'items' => $composer_packages,
+            ],
+            'plugins'          => [
+                '_meta' => [
+                    'count'       => count($plugins),
+                    'activeCount' => self::count_active($plugins),
+                ],
+                'items' => $plugins,
+            ],
+            'themes'           => [
+                '_meta' => [
+                    'count'       => count($themes),
+                    'activeCount' => self::count_active($themes),
+                ],
+                'items' => $themes,
+            ],
             'integrations'     => [],
             'updates'          => ['lastCheckedAt' => null],
-            'collectorErrors'  => [],
+            'collectorErrors'  => $collector_errors,
         ];
 
         // Same total Reporter_Timer already measured for the log line —
@@ -173,6 +200,39 @@ class Reporter_Rest
         $body['monitor']['generationMs'] = Reporter_Timer::finish_request();
 
         return new WP_REST_Response($body, 200);
+    }
+
+    /**
+     * Runs one collector wrapped in both Reporter_Timer::time() (audit log)
+     * and a try/catch — a thrown exception is logged, appended to
+     * collectorErrors[] by reference, and the section falls back to null so
+     * the rest of the response still returns (Endpoint resilience rule).
+     *
+     * @param array<int, array{collector: string, message: string}> $collector_errors
+     */
+    private static function run_collector(string $name, array &$collector_errors, callable $section): mixed
+    {
+        try {
+            return Reporter_Timer::time($name, $section);
+        } catch (Throwable $e) {
+            Reporter_Log::error("Collector '{$name}' failed", ['exception' => $e->getMessage()]);
+            $collector_errors[] = ['collector' => $name, 'message' => $e->getMessage()];
+
+            return null;
+        }
+    }
+
+    /**
+     * Cheap count of 'active' entries in a plugins[]/themes[] items array —
+     * count() only, no re-querying anything. Used to build each category's
+     * own `_meta.activeCount` below.
+     */
+    private static function count_active(array $items): int
+    {
+        return count(array_filter(
+            $items,
+            static fn (array $item) => 'active' === ($item['status'] ?? null)
+        ));
     }
 
     /**
