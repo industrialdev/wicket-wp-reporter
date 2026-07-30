@@ -19,9 +19,7 @@ defined('ABSPATH') || exit;
 define('WICKET_REPORTER_VERSION', get_file_data(__FILE__, ['Version' => 'Version'])['Version']);
 define('WICKET_REPORTER_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('WICKET_REPORTER_PLUGIN_URL', plugin_dir_url(__FILE__));
-define('WICKET_REPORTER_OPTION_ENABLED', 'wicket_reporter_enabled');
 define('WICKET_REPORTER_OPTION_API_KEY_HASH', 'wicket_reporter_api_key_hash');
-define('WICKET_REPORTER_OPTION_ENV_OVERRIDE', 'wicket_reporter_environment_override');
 define('WICKET_REPORTER_TRANSIENT_PREFIX', 'wicket_reporter_');
 
 // Load classes early so the settings filters can reference them.

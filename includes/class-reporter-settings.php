@@ -99,14 +99,14 @@ class Reporter_Settings
     public static function register_settings($section): void
     {
         $section->add_option('checkbox', [
-            'name'        => 'enabled',
+            'name'        => 'wicket_reporter_enabled',
             'label'       => __('Enable Wicket Reporter', 'wicket-reporter'),
             'description' => __('Hard kill switch. When disabled, the REST endpoint itself refuses requests — no collectors run, no data leaves this site.', 'wicket-reporter'),
             'default'     => '0',
         ]);
 
         $section->add_option('select', [
-            'name'        => 'environment_override',
+            'name'        => 'wicket_reporter_environment_override',
             'label'       => __('Environment Override', 'wicket-reporter'),
             'description' => __('Overrides this site\'s self-reported environment for the fleet monitor. Leave on Auto-detect to use WordPress\'s own wp_get_environment_type().', 'wicket-reporter'),
             'options'     => [
@@ -280,13 +280,21 @@ class Reporter_Settings
      * Removes the stored API key hash and any transients on uninstall.
      *
      * Not run on deactivate — deactivating and reactivating must not force
-     * key regeneration.
+     * key regeneration. The enabled/environment-override fields live inside
+     * base-plugin's shared `wicket_settings` aggregate option (WPSettings
+     * stores one option for the whole tab page, keyed by field name — see
+     * wicket_get_option()), not their own standalone options, so they're
+     * unset from that array rather than deleted as top-level options; the
+     * shared option itself is never deleted since other plugins' settings
+     * live in it too.
      */
     public static function on_uninstall(): void
     {
         delete_option(WICKET_REPORTER_OPTION_API_KEY_HASH);
-        delete_option(WICKET_REPORTER_OPTION_ENABLED);
-        delete_option(WICKET_REPORTER_OPTION_ENV_OVERRIDE);
+
+        $wicket_settings = get_option('wicket_settings', []);
+        unset($wicket_settings['wicket_reporter_enabled'], $wicket_settings['wicket_reporter_environment_override']);
+        update_option('wicket_settings', $wicket_settings);
 
         global $wpdb;
         $wpdb->query(
