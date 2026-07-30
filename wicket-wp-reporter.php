@@ -29,6 +29,8 @@ require_once WICKET_REPORTER_PLUGIN_DIR . 'includes/class-reporter-settings.php'
 require_once WICKET_REPORTER_PLUGIN_DIR . 'includes/class-reporter-timer.php';
 require_once WICKET_REPORTER_PLUGIN_DIR . 'includes/class-reporter-composer.php';
 require_once WICKET_REPORTER_PLUGIN_DIR . 'includes/class-reporter-plugins.php';
+require_once WICKET_REPORTER_PLUGIN_DIR . 'includes/Integrations/interface-integration-adapter.php';
+require_once WICKET_REPORTER_PLUGIN_DIR . 'includes/class-reporter-integrations.php';
 require_once WICKET_REPORTER_PLUGIN_DIR . 'includes/class-reporter-rest.php';
 
 add_action('rest_api_init', ['Reporter_Rest', 'register_routes']);

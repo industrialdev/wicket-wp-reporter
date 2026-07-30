@@ -5,12 +5,12 @@ declare(strict_types=1);
 defined('ABSPATH') || exit;
 
 /**
- * T4 — composer.json/composer.lock collector.
+ * composer.json/composer.lock collector.
  *
  * Direct JSON parse only — no shell_exec, no composer binary dependency.
- * Runs before T3 in the response pipeline (Reporter_Rest::handle_status)
- * so T3's plugin/theme collectors can cross-reference this output to
- * derive installType/updateSource per the plan's field-sourcing rules.
+ * Runs before the plugin/theme collectors (Reporter_Rest::handle_status)
+ * so they can cross-reference this output to derive installType/
+ * updateSource per plugin/theme.
  */
 class Reporter_Composer
 {
@@ -167,10 +167,9 @@ class Reporter_Composer
     }
 
     /**
-     * Wicket-authored private VCS packages — namespace confirmed at
-     * plan-review time as the sole disambiguator (see plan's T3 notes):
-     * `wicket/*` / `industrialdev/*`, or a package resolving to a direct
-     * git URL outside the wordpress.org/SatisPress proxies.
+     * Wicket-authored private VCS packages: `wicket/*` / `industrialdev/*`
+     * namespace, or a package resolving to a direct git URL outside the
+     * wordpress.org/SatisPress proxies.
      */
     public static function is_wicket_git_package(string $name, array $package): bool
     {

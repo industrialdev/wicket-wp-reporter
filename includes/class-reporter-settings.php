@@ -128,7 +128,7 @@ class Reporter_Settings
         // a masked placeholder plus a Reset link. Reset is a plain GET link
         // (not the settings page's Save Changes/POST path, which has been
         // unreliable for this plugin's fields on this site, for reasons not
-        // yet root-caused — see T1 notes), handled by maybe_handle_reset()
+        // yet root-caused), handled by maybe_handle_reset()
         // before this tab even renders, and its nonce URL explicitly targets
         // this same tab (page=wicket-settings&tab=integrations) — clicking
         // it always lands back here, never a generic admin.php or the tab's

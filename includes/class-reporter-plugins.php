@@ -5,17 +5,17 @@ declare(strict_types=1);
 defined('ABSPATH') || exit;
 
 /**
- * T3 — plugin/theme/core collectors.
+ * Plugin/theme collectors.
  *
- * Runs after Reporter_Composer (T4) and consumes its parsed output directly
- * to derive installType/updateSource per package — see the plan's field-
- * sourcing notes. Standard WP core enumeration only (get_plugins(),
- * wp_get_themes()), no raw filesystem scanning beyond what those already do.
+ * Runs after Reporter_Composer and consumes its parsed output directly to
+ * derive installType/updateSource per package. Standard WP core
+ * enumeration only (get_plugins(), wp_get_themes()), no raw filesystem
+ * scanning beyond what those already do.
  */
 class Reporter_Plugins
 {
     /**
-     * @param array<int, array<string, mixed>> $composer_packages T4's parsed composer[] entries.
+     * @param array<int, array<string, mixed>> $composer_packages Reporter_Composer's parsed composer[] entries.
      * @return array<int, array<string, mixed>>
      */
     public static function collect_plugins(array $composer_packages): array
@@ -87,9 +87,9 @@ class Reporter_Plugins
     }
 
     /**
-     * Keys T4's composer[] entries by the directory name Composer would
-     * have installed them under, so a plugin/theme folder name looks itself
-     * up directly — one pass over composer_packages, not one lookup per
+     * Keys composer[] entries by the directory name Composer would have
+     * installed them under, so a plugin/theme folder name looks itself up
+     * directly — one pass over composer_packages, not one lookup per
      * plugin.
      *
      * @param array<int, array<string, mixed>> $composer_packages
@@ -115,7 +115,7 @@ class Reporter_Plugins
     }
 
     /**
-     * T4's composer[] entries already carry enough to classify updateSource
+     * composer[] entries already carry enough to classify updateSource
      * without re-parsing the lock file: a `repository` key present means a
      * Wicket git package (see Reporter_Composer::build_entry); otherwise
      * fall back to the composer package name's own vendor prefix.

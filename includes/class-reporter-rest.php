@@ -147,14 +147,18 @@ class Reporter_Rest
     /**
      * Builds the status response from scratch, running every collector.
      *
-     * Collector order matters: composer (T4) must run before plugins/themes
-     * (T3) since T3 cross-references T4's parsed output to derive
-     * installType/updateSource — see the plan's field-sourcing notes.
-     * integrations{} (T6/T7/T11/T12) stays an empty placeholder for now.
-     * Every collector is individually wrapped, both in Reporter_Timer::time()
+     * Collector order matters: the composer collector must run before the
+     * plugin/theme collectors, since those cross-reference its parsed
+     * output to derive installType/updateSource per plugin/theme. Every
+     * collector is individually wrapped, both in Reporter_Timer::time()
      * (audit log) and try/catch (Endpoint resilience — one failing collector
      * never 500s the whole response; its section is omitted/empty and the
      * failure appended to collectorErrors[]).
+     *
+     * TODO: integrations{} has no adapters registered yet — memberships
+     * (T7) and WooCommerce (T12) will add themselves to
+     * Reporter_Integrations::$adapters once built, and this method needs
+     * no change when they do.
      */
     private static function build_status_body(): array
     {
@@ -172,6 +176,7 @@ class Reporter_Rest
 
         $plugins = self::run_collector('plugins', $collector_errors, static fn () => Reporter_Plugins::collect_plugins($composer_packages)) ?? [];
         $themes = self::run_collector('themes', $collector_errors, static fn () => Reporter_Plugins::collect_themes($composer_packages)) ?? [];
+        $integrations = self::run_collector('integrations', $collector_errors, static fn () => Reporter_Integrations::collect()) ?? [];
 
         $body = [
             'schemaVersion' => 1,
@@ -182,7 +187,11 @@ class Reporter_Rest
             ],
             'monitor' => [
                 'version'      => WICKET_REPORTER_VERSION,
-                'capabilities' => ['wordpress', 'plugins', 'themes', 'composer'],
+                // Base capabilities plus each available adapter's own slug
+                // (e.g. 'memberships', 'woocommerce') — mirrors
+                // integrations{}'s own key-absence rule: a site without
+                // that integration doesn't list it here either.
+                'capabilities' => array_merge(['wordpress', 'plugins', 'themes', 'composer'], array_keys($integrations)),
                 'generationMs' => null, // filled in below, after Reporter_Timer::finish_request()
             ],
             'site'      => Reporter_Timer::time('site', static fn () => self::get_site_info()),
@@ -211,7 +220,7 @@ class Reporter_Rest
                 ],
                 'items' => $themes,
             ],
-            'integrations'     => [],
+            'integrations'     => $integrations,
             'updates'          => ['lastCheckedAt' => null],
             'collectorErrors'  => $collector_errors,
         ];
