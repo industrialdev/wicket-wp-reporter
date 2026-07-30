@@ -6,6 +6,17 @@ defined('ABSPATH') || exit;
 
 /**
  * One implementation per known integration (memberships, WooCommerce, ...).
+ *
+ * **One adapter per plugin, always — never one adapter covering more than
+ * one installable plugin.** WooCommerce core and WooCommerce Subscriptions
+ * are separate plugins, so they're separate adapters even though
+ * Subscriptions depends on WooCommerce — folding Subscriptions' data into
+ * Woocommerce_Adapter would make is_available() ambiguous (which plugin is
+ * it actually checking?) and would force a `null`-vs-absent hack to report
+ * "Subscriptions isn't installed" instead of integrations{} simply
+ * omitting the key, per the key-absence convention every other adapter
+ * already follows.
+ *
  * Sibling plugins stay unaware of this plugin — no filter hooks on their
  * side. Coupling to a target plugin's internal data shape lives entirely
  * in its adapter.

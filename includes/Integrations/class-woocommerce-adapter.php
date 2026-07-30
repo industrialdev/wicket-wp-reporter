@@ -29,7 +29,9 @@ class Woocommerce_Adapter implements Reporter_Integration_Adapter
      * @return array{
      *     metrics: array{
      *         orders: array<string, int>,
-     *         users: array{total: int, byRole: array<string, int>}
+     *         users: array{total: int, byRole: array<string, int>},
+     *         totalProducts: int,
+     *         totalCoupons: int
      *     },
      *     configuration: array{}
      * }
@@ -38,8 +40,10 @@ class Woocommerce_Adapter implements Reporter_Integration_Adapter
     {
         return [
             'metrics' => [
-                'orders' => self::count_orders_by_status(),
-                'users'  => self::count_users_by_role(),
+                'orders'        => self::count_orders_by_status(),
+                'users'         => self::count_users_by_role(),
+                'totalProducts' => self::count_posts_by_status('product', 'publish'),
+                'totalCoupons'  => self::count_posts_by_status('shop_coupon', 'publish'),
             ],
             'configuration' => [],
         ];
@@ -86,5 +90,13 @@ class Woocommerce_Adapter implements Reporter_Integration_Adapter
             'total'  => $counts['total_users'],
             'byRole' => $counts['avail_roles'],
         ];
+    }
+
+    /** wp_count_posts() is core's own cheap-count API — one query, no per-row iteration. */
+    private static function count_posts_by_status(string $post_type, string $status): int
+    {
+        $counts = wp_count_posts($post_type);
+
+        return (int) ($counts->{$status} ?? 0);
     }
 }

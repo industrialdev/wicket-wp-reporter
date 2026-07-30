@@ -47,7 +47,7 @@ just a real gap in current coverage, left open rather than adding an ad
 hoc detection heuristic outside any scoped task.
 | `composer.items[].type` | `wordpress-plugin`, `wordpress-theme`, `wordpress-muplugin`, `wordpress-core` | The only composer package types this plugin reports. |
 | `site.environment` | `production`, `staging`, `development`, `sandbox` | From `wp_get_environment_type()` unless the settings override is set. |
-| `collectorErrors[].collector` | `composer`, `plugins`, `themes`, `integrations`, `integrations.memberships`, `integrations.woocommerce`, `wordpress`, `site` | `composer`/`plugins`/`themes`/`wordpress`/`site` match a top-level collector throwing. `integrations` matches the whole adapter registry failing to load (rare — e.g. a fatal in `Reporter_Integrations::collect()` itself). `integrations.<slug>` matches one specific adapter throwing — every other adapter's data still returns, per the per-adapter isolation in `Reporter_Integrations::collect()`. |
+| `collectorErrors[].collector` | `composer`, `plugins`, `themes`, `integrations`, `integrations.memberships`, `integrations.woocommerce`, `integrations.subscriptions`, `wordpress`, `site` | `composer`/`plugins`/`themes`/`wordpress`/`site` match a top-level collector throwing. `integrations` matches the whole adapter registry failing to load (rare — e.g. a fatal in `Reporter_Integrations::collect()` itself). `integrations.<slug>` matches one specific adapter throwing — every other adapter's data still returns, per the per-adapter isolation in `Reporter_Integrations::collect()`. |
 
 ## Integration adapters
 
@@ -70,6 +70,19 @@ Registering a new adapter means adding one class plus one line to
 value.** Each adapter's own `@return array{...}` PHPDoc on `collect()` is
 the only contract — treat it as load-bearing documentation, keep it in
 sync with the actual return shape.
+
+### Convention: one adapter per plugin, always
+
+Never fold more than one installable plugin's data into a single adapter,
+even when one plugin depends on another. WooCommerce Subscriptions is a
+separate plugin from WooCommerce core, so `Subscriptions_Adapter` is
+separate from `Woocommerce_Adapter` — this was corrected during T9's
+build, after subscription counts were first added directly to
+`Woocommerce_Adapter`. Folding them together made `is_available()`
+ambiguous (checking which plugin?) and forced a `null`-vs-empty hack to
+signal "Subscriptions isn't installed," instead of `integrations{}` simply
+omitting the `subscriptions` key the same way every other adapter's
+absence already works.
 
 ### Convention: every adapter splits into `metrics` + `configuration`
 
@@ -122,7 +135,7 @@ adapter.
 | `configs[].anniversaryData` | object or `null` | `{periodCount, periodType}` — only meaningful when `cycleType` is `anniversary`; null otherwise. |
 | `configs[].renewalWindowDays` | int or `null` | From the config's own `renewal_window_data.days_count` — how many days before expiry the renewal window opens. |
 | `configs[].lateFeeWindowDays` | int or `null` | From the config's own `late_fee_window_data.days_count` — how many days after expiry before a late fee applies. |
-| `configs[].renewalTypes` | array of string | Distinct `renewal_type` values (`current_tier`, `sequential_logic`, `form_flow`) seen across the config's tiers. |
+| `configs[].renewalTypes` | array of string | Distinct `renewal_type` values seen across the config's tiers. Four values exist, per `wicket-wp-memberships`' own tier-edit UI (`renewalTypeOptions` in `frontend/src/membership_tiers/edit.js`): `current_tier` ("Current Tier"), `sequential_logic` ("Sequential Logic"), `form_flow` ("Renewal Form Flow"), `subscription` ("Subscription") — the last was missing from an earlier pass of this doc until audited against the actual plugin code. |
 | `configs[].tierTypes` | array of string | Distinct `type` values (e.g. `individual`, `organization`) seen across the config's tiers. |
 | `configs[].seatTypes` | array of string | Distinct `seat_type` values (e.g. `per_seat`) seen across the config's tiers. |
 | `configs[].approvalRequired` | bool | True if any tier under this config has `approval_required` set. |
@@ -225,6 +238,8 @@ no config/tier-style setup to report, unlike memberships.
 | `orders` | object | One key per order status this site actually uses (from `wc_get_order_statuses()`, not a hardcoded list), each value the count from `wc_orders_count()` for that status. |
 | `users.total` | int | `count_users()['total_users']` — every WP user account, not filtered to WooCommerce customers specifically. |
 | `users.byRole` | object | `count_users()['avail_roles']` passed through as-is — role slug to count. A multi-role user is counted once per role, not once per person, so summing these values can exceed `users.total`. Same shape WooCommerce's own `WC_Tracker::get_user_counts()` reports; there's no WC-sanctioned way to derive a single "customers" figure from role counts without double- or under-counting multi-role users, so this adapter doesn't attempt one. |
+| `totalProducts` | int | `wp_count_posts('product')->publish` — published products only. |
+| `totalCoupons` | int | `wp_count_posts('shop_coupon')->publish` — published coupons only. |
 
 #### Example `integrations.woocommerce` response fragment
 
@@ -250,6 +265,45 @@ no config/tier-style setup to report, unlike memberships.
         "subscriber": 3,
         "customer": 2
       }
+    },
+    "totalProducts": 24,
+    "totalCoupons": 3
+  },
+  "configuration": {}
+}
+```
+
+### `integrations.subscriptions` (`Subscriptions_Adapter`)
+
+WooCommerce Subscriptions — a separate installable plugin from WooCommerce
+core, so it gets its own adapter and its own `integrations.subscriptions`
+key, absent entirely on a site without the plugin active (not present with
+an empty/null value). Uses the same `wc_orders_count()` API as
+`Woocommerce_Adapter`, just scoped to the `shop_subscription` order type.
+`configuration` is always empty — no config/tier-style setup exists for
+this adapter.
+
+#### `metrics` — pure counts
+
+| Field | Type | Meaning |
+|---|---|---|
+| `byStatus` | object | One key per subscription status (from `wcs_get_subscription_statuses()`), counted via `wc_orders_count($status, 'shop_subscription')` — same HPOS-aware, WC-cached counting API `Woocommerce_Adapter` uses for orders. |
+
+#### Example `integrations.subscriptions` response fragment
+
+```json
+{
+  "available": true,
+  "active": true,
+  "metrics": {
+    "byStatus": {
+      "pending": 1,
+      "active": 42,
+      "on-hold": 3,
+      "cancelled": 6,
+      "switched": 0,
+      "expired": 11,
+      "pending-cancel": 0
     }
   },
   "configuration": {}

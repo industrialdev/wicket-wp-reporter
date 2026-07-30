@@ -8,6 +8,13 @@ defined('ABSPATH') || exit;
  * Static adapter registry for integrations{}. Loops known adapters, skips
  * one whose is_available() is false (key absent from the response, not an
  * error), calls collect() for the rest.
+ *
+ * One adapter per plugin, always — e.g. WooCommerce core and WooCommerce
+ * Subscriptions are separate installable plugins, so they're separate
+ * adapters (Woocommerce_Adapter, Subscriptions_Adapter) even though one
+ * depends on the other, rather than folding one plugin's data into
+ * another's adapter. Keeps is_available() meaningful per plugin and lets
+ * integrations{} correctly report one absent while the other is present.
  */
 class Reporter_Integrations
 {
@@ -15,6 +22,7 @@ class Reporter_Integrations
     private static array $adapters = [
         Memberships_Adapter::class,
         Woocommerce_Adapter::class,
+        Subscriptions_Adapter::class,
     ];
 
     /**
