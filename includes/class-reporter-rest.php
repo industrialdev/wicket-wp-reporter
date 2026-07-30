@@ -20,6 +20,10 @@ class Reporter_Rest
     private const RATE_LIMIT_MAX_REQUESTS = 60;
     private const RATE_LIMIT_WINDOW_SECONDS = 60;
 
+    /** 8h flat TTL, matching the stack-wide caching policy. No early-bust hooks — TTL-only, by design. */
+    private const CACHE_TTL_SECONDS = 8 * HOUR_IN_SECONDS;
+    private const CACHE_KEY = WICKET_REPORTER_TRANSIENT_PREFIX . 'status_response';
+
     public static function register_routes(): void
     {
         register_rest_route(self::NAMESPACE, self::ROUTE, [
@@ -122,7 +126,26 @@ class Reporter_Rest
     }
 
     /**
-     * Builds the status response.
+     * Serves the cached response if present, else builds and caches it —
+     * so a repeat request skips every collector entirely.
+     */
+    public static function handle_status(WP_REST_Request $request): WP_REST_Response
+    {
+        $cached = get_transient(self::CACHE_KEY);
+
+        if (false !== $cached && is_array($cached)) {
+            return new WP_REST_Response($cached, 200);
+        }
+
+        $body = self::build_status_body();
+
+        set_transient(self::CACHE_KEY, $body, self::CACHE_TTL_SECONDS);
+
+        return new WP_REST_Response($body, 200);
+    }
+
+    /**
+     * Builds the status response from scratch, running every collector.
      *
      * Collector order matters: composer (T4) must run before plugins/themes
      * (T3) since T3 cross-references T4's parsed output to derive
@@ -133,12 +156,11 @@ class Reporter_Rest
      * never 500s the whole response; its section is omitted/empty and the
      * failure appended to collectorErrors[]).
      */
-    public static function handle_status(WP_REST_Request $request): WP_REST_Response
+    private static function build_status_body(): array
     {
         Reporter_Timer::start_request();
 
         $now = gmdate('Y-m-d\TH:i:s\Z');
-        $cache_ttl = 8 * HOUR_IN_SECONDS;
         $collector_errors = [];
 
         $composer_result = self::run_collector('composer', $collector_errors, static fn () => Reporter_Composer::collect());
@@ -156,7 +178,7 @@ class Reporter_Rest
             'generatedAt'   => $now,
             'cache'         => [
                 'generatedAt' => $now,
-                'expiresAt'   => gmdate('Y-m-d\TH:i:s\Z', time() + $cache_ttl),
+                'expiresAt'   => gmdate('Y-m-d\TH:i:s\Z', time() + self::CACHE_TTL_SECONDS),
             ],
             'monitor' => [
                 'version'      => WICKET_REPORTER_VERSION,
@@ -199,7 +221,7 @@ class Reporter_Rest
         // reading server-side logs.
         $body['monitor']['generationMs'] = Reporter_Timer::finish_request();
 
-        return new WP_REST_Response($body, 200);
+        return $body;
     }
 
     /**
