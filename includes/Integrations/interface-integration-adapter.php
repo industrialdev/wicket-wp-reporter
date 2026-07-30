@@ -18,6 +18,22 @@ interface Reporter_Integration_Adapter
     /** Whether the target plugin is active on this site. */
     public function is_available(): bool;
 
-    /** Cheap-count-only metrics — see the plan's Lightweight-only principle. */
+    /**
+     * Returns {metrics, configuration} — the standing convention for every
+     * adapter, kept as two separate top-level keys rather than one blended
+     * bag. `metrics` is pure counts/usage numbers (cheap-count-only, see
+     * the plan's Lightweight-only principle) — if a field answers "how
+     * many," it goes here. `configuration` is what's set up — settings,
+     * linked posts/products, type/category values — if a field answers
+     * "what kind" or "set to what," it goes here. See docs/api-schema.md's
+     * "Convention: every adapter splits into metrics + configuration" for
+     * the worked example. Every implementation must declare its own
+     * concrete return shape via an @return array{...} PHPDoc annotation on
+     * its collect() — this plugin has no runtime schema validation, so the
+     * doc block is the only contract a consumer (or another dev) has to
+     * go on.
+     *
+     * @return array{metrics: array<string, mixed>, configuration: array<string, mixed>}
+     */
     public function collect(): array;
 }

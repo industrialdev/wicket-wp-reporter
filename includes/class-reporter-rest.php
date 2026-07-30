@@ -176,7 +176,13 @@ class Reporter_Rest
 
         $plugins = self::run_collector('plugins', $collector_errors, static fn () => Reporter_Plugins::collect_plugins($composer_packages)) ?? [];
         $themes = self::run_collector('themes', $collector_errors, static fn () => Reporter_Plugins::collect_themes($composer_packages)) ?? [];
-        $integrations = self::run_collector('integrations', $collector_errors, static fn () => Reporter_Integrations::collect()) ?? [];
+
+        $integrations_result = self::run_collector('integrations', $collector_errors, static fn () => Reporter_Integrations::collect());
+        $integrations = $integrations_result['integrations'] ?? [];
+
+        foreach ($integrations_result['errors'] ?? [] as $slug => $message) {
+            $collector_errors[] = ['collector' => "integrations.{$slug}", 'message' => $message];
+        }
 
         $body = [
             'schemaVersion' => 1,

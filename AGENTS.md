@@ -26,11 +26,14 @@ wicket-wp-reporter/
 │   ├── class-reporter-log.php      # Thin wrapper over Wicket()->log(), source = 'wicket-reporter'
 │   ├── class-reporter-rest.php     # GET wicket-reporter/v1/status: auth, rate limit, response
 │   ├── class-reporter-timer.php    # Per-request collector timing -> one audit log line
-│   ├── class-reporter-composer.php # T4: composer.lock/json parser -> composer[] section
-│   ├── class-reporter-plugins.php  # T3: plugin/theme collectors -> plugins[]/themes[] sections
+│   ├── class-reporter-composer.php # Composer.lock/json parser -> composer[] section
+│   ├── class-reporter-plugins.php  # Plugin/theme collectors -> plugins[]/themes[] sections
+│   ├── class-reporter-integrations.php # Adapter registry -> integrations{} section
 │   └── Integrations/               # One adapter class per integration (memberships, WooCommerce)
-├── docs/engineering/
-│   └── release-automation.md       # Stub — canonical doc lives in wicket-atlas
+├── docs/
+│   ├── api-schema.md                # Field/value reference, integration adapter shapes
+│   └── engineering/
+│       └── release-automation.md    # Stub — canonical doc lives in wicket-atlas
 ├── composer.json
 └── .gitignore
 ```
@@ -64,20 +67,13 @@ Collector order matters: `Reporter_Composer::collect()` (T4) runs **before** `Re
 
 `Reporter_Composer::collect()` reads `composer.lock`/`composer.json` directly (`json_decode`, no `shell_exec`, no composer binary dependency), filtered to `wordpress-plugin`/`wordpress-theme`/`wordpress-muplugin`/`wordpress-core` types only — a real fleet `composer.lock` carries dozens of transitive PHP libraries (Carbon, Doctrine, etc.) that aren't WordPress-installable units and are dropped as noise.
 
-`composer[]`, `plugins[]`, and `themes[]` in the response are each `{ _meta: {...}, items: [...] }` objects, not bare arrays — `_meta.count` on all three, plus `_meta.activeCount` on `plugins`/`themes`. `latestVersion`/`updateAvailable` are **omitted entirely** from `plugins[].items[]` and `wordpress{}`, not set to `null` — M1 has no external version-lookup (that's M2/T9), and a `null` here would read ambiguously close to "no update available" under a naive falsy check in client code.
+`composer[]`, `plugins[]`, and `themes[]` in the response are each `{ _meta: {...}, items: [...] }` objects, not bare arrays. `latestVersion`/`updateAvailable` are **omitted entirely** from `plugins[].items[]` and `wordpress{}`, not set to `null` — this plugin has no external version-lookup, and a `null` here would read ambiguously close to "no update available" under a naive falsy check in client code.
 
-#### Field value reference
+Full field/value reference and worked examples, including the integration adapter contract and `integrations.memberships` shape: [`docs/api-schema.md`](docs/api-schema.md).
 
-| Field | Values | Meaning |
-|---|---|---|
-| `plugins/themes .items[].status` | `active`, `inactive` | Whether WordPress currently has it active. |
-| `plugins/themes .items[].installType` | `composer`, `wordpress`, `manual` | `composer` = matched a `composer.lock` entry by directory name. `wordpress` = no composer match, but a wordpress.org-style `readme.txt` header found. `manual` = neither. |
-| `plugins/themes .items[].updateSource` | `git`, `satispress`, `wordpress-org`, `unknown` | Where M2/T9 checks for a newer version. `git` = Wicket-authored (`industrialdev/*` namespace, or a direct git URL). `satispress` = licensed package (`wicketpress/*`). `wordpress-org` = public wordpress.org directory (`wp-plugin/*` or `wpackagist-plugin/*`/`wpackagist-theme/*` — both proxy the same source). `unknown` = no match. |
-| `composer.items[].type` | `wordpress-plugin`, `wordpress-theme`, `wordpress-muplugin`, `wordpress-core` | The only composer package types this plugin reports. |
-| `site.environment` | `production`, `staging`, `development`, `sandbox` | From `wp_get_environment_type()` unless the settings override is set. |
-| `collectorErrors[].collector` | `composer`, `plugins`, `themes`, `memberships`, `woocommerce`, `wordpress`, `site` | Matches whichever collector/adapter slug threw. |
+### Integration adapters
 
-Full detail and worked JSON examples: the plan's "Field value reference" section (linked above).
+`includes/Integrations/interface-integration-adapter.php` defines `Reporter_Integration_Adapter` (`slug()`/`is_available()`/`collect()`). `collect()` returns `{metrics, configuration}` — the standing convention for every adapter (`metrics` = pure counts, `configuration` = what's set up), not just something memberships happens to do. `Reporter_Integrations::collect()` loops the static `$adapters` list, skips one whose `is_available()` is false, else calls `collect()`; one adapter throwing is caught individually so it never blanks out another adapter's data. Registering a new adapter means adding one class plus one line to `$adapters` — no other file changes. Details and each adapter's shape: [`docs/api-schema.md`](docs/api-schema.md).
 
 ### Performance audit log
 
@@ -87,11 +83,7 @@ Full detail and worked JSON examples: the plan's "Field value reference" section
 
 `Reporter_Settings::on_uninstall()` (registered via `register_uninstall_hook`, not a deactivation hook) removes the stored API key hash option, unsets the `enabled`/`environment_override` keys from the shared `wicket_settings` option (without deleting that option itself — other plugins' settings live in it too), and removes any of this plugin's transients. Deactivating and reactivating must **never** force key regeneration — only a full uninstall clears the key.
 
-### Integration adapters (T6/T7/T11/T12 — not all built yet)
-
-`includes/Integrations/` holds one adapter class per known integration, each implementing a common `is_available()`/`collect()` interface (see the plan's Integrations model section). Sibling plugins stay completely unaware of this plugin — no filter hooks added on their side. Adding a new integration means adding one adapter class here, not touching the target plugin.
-
-**Lightweight-only, non-negotiable**: every collector/adapter reports cheap counts only (`COUNT(*)`-shaped queries). Nothing that scans/aggregates many rows. If a metric can't be a cheap count, it doesn't belong in this plugin — see the plan's "Lightweight-only, stack-wide principle" section.
+**Lightweight-only, non-negotiable**: every collector/adapter reports cheap counts only (`COUNT(*)`-shaped queries). Nothing that scans/aggregates many rows. If a metric can't be a cheap count, it doesn't belong in this plugin.
 
 ## Constants
 
