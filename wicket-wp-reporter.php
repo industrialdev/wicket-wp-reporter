@@ -34,15 +34,18 @@ require_once WICKET_REPORTER_PLUGIN_DIR . 'includes/class-reporter-settings.php'
 add_filter('wicket_settings_tabs', ['Reporter_Settings', 'extend_settings_tabs'], 20);
 add_filter('wicket_settings_tab_int', ['Reporter_Settings', 'extend_settings_tab_fallback'], 20);
 
-// Generate/Regenerate Key button posts here (see render_api_key_field).
-add_action('admin_post_wicket_reporter_generate_key', ['Reporter_Settings', 'handle_generate_key']);
+// Reset API Key link (see render_api_key_field) — a plain GET, handled
+// before the tab renders so maybe_handle_reset can flash the new raw key
+// via a short-lived transient (see admin_notices hook below).
+add_action('admin_init', ['Reporter_Settings', 'maybe_handle_reset']);
 
 /**
- * Show the newly generated raw API key once, immediately after redirect.
+ * Show a newly generated/reset raw API key once, immediately after the
+ * GET-link reset redirect lands back on this tab.
  *
- * The key itself lives only in a 60-second, current-user-scoped transient
- * (set in handle_generate_key) — reading it here deletes it in the same
- * request, so a page refresh never shows it twice.
+ * The raw key lives only in a 60-second, current-user-scoped transient (set
+ * in maybe_handle_reset) — reading it here deletes it in the same request,
+ * so a page refresh never shows it twice. Only the hash is ever persisted.
  */
 add_action('admin_notices', function (): void {
     if (empty($_GET['wicket_reporter_key_generated'])) {

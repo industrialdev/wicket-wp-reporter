@@ -14,9 +14,6 @@ class Reporter_Settings
 {
     private static bool $settings_section_added = false;
 
-    private const NONCE_ACTION = 'wicket_reporter_generate_key';
-    private const NONCE_NAME = 'wicket_reporter_generate_key_nonce';
-
     /**
      * Hook into wicket_settings_tabs and wrap the existing 'integrations' entry's
      * callback so our section renders after the base tab.
@@ -68,6 +65,10 @@ class Reporter_Settings
     /**
      * Add the Wicket Reporter section and its options to a tab object.
      *
+     * Auto-generates the API key here, on render (a plain page load), if
+     * none exists yet — deliberately not tied to a settings-page save/POST,
+     * so simply opening this tab always guarantees a key exists to show.
+     *
      * @param mixed $tab WPSettings tab instance.
      */
     private static function add_settings_section($tab): void
@@ -75,6 +76,8 @@ class Reporter_Settings
         if (!is_object($tab) || !method_exists($tab, 'add_section')) {
             return;
         }
+
+        self::ensure_key_exists();
 
         $section = $tab->add_section(__('Wicket Reporter', 'wicket-reporter'), [
             'as_link'     => true,
@@ -106,7 +109,7 @@ class Reporter_Settings
             'name'        => 'environment_override',
             'label'       => __('Environment Override', 'wicket-reporter'),
             'description' => __('Overrides this site\'s self-reported environment for the fleet monitor. Leave on Auto-detect to use WordPress\'s own wp_get_environment_type().', 'wicket-reporter'),
-            'choices'     => [
+            'options'     => [
                 ''             => __('Auto-detect', 'wicket-reporter'),
                 'production'   => __('Production', 'wicket-reporter'),
                 'staging'      => __('Staging', 'wicket-reporter'),
@@ -116,99 +119,157 @@ class Reporter_Settings
             'default'     => '',
         ]);
 
-        // Custom-rendered field: API key generate/regenerate button + masked
-        // current-key display. Not a WPSettings-managed value — the key hash
-        // is stored/rotated via its own admin_post_ handler, not the settings
-        // save pipeline, so a click can't be silently overwritten by an
-        // unrelated Save Changes submit on this same tab.
-        $section->add_option('checkbox', [
-            'name'     => 'api_key_display',
-            'label'    => '',
-            'render'   => [__CLASS__, 'render_api_key_field'],
-            'sanitize' => static fn ($value) => $value,
+        // Masked key display. Custom-rendered rather than a plain 'text'
+        // option: WPSettings' own value system reads from the tab's
+        // aggregate settings option (a single nested array), but only the
+        // key's hash is ever stored (written by ensure_key_exists()/reset),
+        // and a hash can't be shown back as the real value — so this field
+        // bypasses the normal value/save pipeline entirely and just renders
+        // a masked placeholder plus a Reset link. Reset is a plain GET link
+        // (not the settings page's Save Changes/POST path, which has been
+        // unreliable for this plugin's fields on this site, for reasons not
+        // yet root-caused — see T1 notes), handled by maybe_handle_reset()
+        // before this tab even renders, and its nonce URL explicitly targets
+        // this same tab (page=wicket-settings&tab=integrations) — clicking
+        // it always lands back here, never a generic admin.php or the tab's
+        // own root. The raw key itself is shown exactly once, via a flash
+        // notice, right after a reset (see admin_notices hook in the main
+        // plugin file).
+        $section->add_option('text', [
+            'name'        => 'api_key_display',
+            'label'       => __('API Key', 'wicket-reporter'),
+            'render'      => [__CLASS__, 'render_api_key_field'],
+            'sanitize'    => static fn ($value) => '',
         ]);
     }
 
     /**
-     * Renders the API key status + Generate/Regenerate button.
+     * Renders a masked API key placeholder with a Reset link beside it.
      *
-     * Deliberately outside the WPSettings save pipeline — the option value
-     * passed in is discarded (see 'sanitize' above); this field is read-only
-     * display plus its own form posting to admin-post.php.
+     * Only the key's hash is stored (see WICKET_REPORTER_OPTION_API_KEY_HASH),
+     * so there is no raw value to read back here — the raw key is shown
+     * exactly once, via a flash notice, right after generation/reset (see
+     * the admin_notices hook in the main plugin file).
      *
-     * @param mixed $impl WPSettings Option instance.
+     * @param mixed $impl WPSettings Option implementation instance (unused —
+     *                    this field ignores the normal value system entirely).
      * @return string
      */
     public static function render_api_key_field($impl): string
     {
-        $label = esc_html__('API Key', 'wicket-reporter');
         $has_key = (bool) get_option(WICKET_REPORTER_OPTION_API_KEY_HASH, '');
-        $button_label = $has_key
-            ? esc_html__('Regenerate Key', 'wicket-reporter')
-            : esc_html__('Generate Key', 'wicket-reporter');
+        $label = esc_html__('API Key', 'wicket-reporter');
+        $masked_value = $has_key
+            ? esc_html__('••••••••••••••••••••••••••••••• (hidden — reset to view)', 'wicket-reporter')
+            : esc_html__('No key set', 'wicket-reporter');
+        $description = esc_html__('Add this site to the fleet monitor\'s registry using this key. The raw value is shown once, right after Reset, and is not stored or retrievable afterward.', 'wicket-reporter');
+        $reset_label = esc_html__('Reset', 'wicket-reporter');
 
-        $status = $has_key
-            ? esc_html__('A key is set. The raw value is shown once, at generation time, and is not stored or retrievable afterward.', 'wicket-reporter')
-            : esc_html__('No key set. The REST endpoint will reject every request until a key is generated.', 'wicket-reporter');
+        $reset_url = wp_nonce_url(
+            add_query_arg(
+                [
+                    'page'                   => 'wicket-settings',
+                    'tab'                    => 'integrations',
+                    // Matches the section's own slug (sanitize_title() of
+                    // its title, "Wicket Reporter") — without this, the
+                    // WPSettings library lands on the tab's first as_link
+                    // section instead of jumping back to this one.
+                    'section'                => 'wicket-reporter',
+                    'wicket_reporter_reset'  => '1',
+                ],
+                admin_url('admin.php')
+            ),
+            'wicket_reporter_reset_key'
+        );
 
         ob_start();
         ?>
-        <tr>
-            <th scope="row"><?php echo $label; ?></th>
-            <td>
-                <p><?php echo $status; ?></p>
-                <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
-                    <input type="hidden" name="action" value="wicket_reporter_generate_key">
-                    <?php wp_nonce_field(self::NONCE_ACTION, self::NONCE_NAME); ?>
-                    <button type="submit" class="button button-secondary">
-                        <?php echo $button_label; ?>
-                    </button>
-                </form>
+        <tr valign="top">
+            <th scope="row" class="titledesc"><?php echo $label; ?></th>
+            <td class="forminp forminp-text">
+                <div style="display: flex; gap: 8px; align-items: center; max-width: 480px;">
+                    <input type="text" readonly value="<?php echo $masked_value; ?>" style="flex: 1;">
+                    <a href="<?php echo esc_url($reset_url); ?>" class="button button-secondary" onclick="return confirm('<?php echo esc_js(__('Generate a new key? The old key stops working immediately.', 'wicket-reporter')); ?>');">
+                        <?php echo $reset_label; ?>
+                    </a>
+                </div>
+                <p class="description"><?php echo $description; ?></p>
             </td>
         </tr>
         <?php
         return (string) ob_get_clean();
     }
 
-    // -------------------------------------------------------------------------
-    // Generate/regenerate action
-    // -------------------------------------------------------------------------
-
     /**
-     * Handles the Generate/Regenerate Key button's admin-post.php submission.
+     * Handles the Reset API Key link's GET navigation.
      *
-     * Registered from the plugin bootstrap file. Shows the raw key once, via
-     * a redirect + transient flash (never persisted in the URL or in a log),
-     * stores only its hash, and immediately invalidates any previous key.
+     * Runs on init (before the settings page renders). Only the new key's
+     * hash is persisted; the raw value is stashed in a 60-second,
+     * current-user-scoped transient and the redirect carries a flag so the
+     * admin_notices hook in the main plugin file can flash it once.
      */
-    public static function handle_generate_key(): void
+    public static function maybe_handle_reset(): void
     {
-        if (!current_user_can('manage_options')) {
-            wp_die(esc_html__('You do not have permission to do this.', 'wicket-reporter'));
+        if (empty($_GET['wicket_reporter_reset']) || !is_admin()) {
+            return;
         }
 
-        check_admin_referer(self::NONCE_ACTION, self::NONCE_NAME);
+        if (!current_user_can('manage_options')) {
+            return;
+        }
 
-        $raw_key = wp_generate_password(48, false, false);
-        $hash = wp_hash_password($raw_key);
+        check_admin_referer('wicket_reporter_reset_key');
 
-        update_option(WICKET_REPORTER_OPTION_API_KEY_HASH, $hash, false);
+        $new_key = self::generate_and_store_key();
 
-        // One-time flash of the raw key, current user only, short TTL —
-        // never written to wp_options or any log.
-        set_transient(
-            'wicket_reporter_new_key_' . get_current_user_id(),
-            $raw_key,
-            60
+        Reporter_Log::info('API key reset', ['user_id' => get_current_user_id()]);
+
+        set_transient('wicket_reporter_new_key_' . get_current_user_id(), $new_key, 60);
+
+        wp_safe_redirect(
+            add_query_arg(
+                [
+                    'page'                        => 'wicket-settings',
+                    'tab'                         => 'integrations',
+                    'section'                     => 'wicket-reporter',
+                    'wicket_reporter_key_generated' => '1',
+                ],
+                admin_url('admin.php')
+            )
         );
-
-        Reporter_Log::info('API key regenerated', ['user_id' => get_current_user_id()]);
-
-        wp_safe_redirect(add_query_arg(
-            ['page' => 'wicket-settings', 'tab' => 'integrations', 'wicket_reporter_key_generated' => '1'],
-            admin_url('admin.php')
-        ));
         exit;
+    }
+
+    /**
+     * Generates and stores an API key (hash only) if one doesn't exist yet.
+     *
+     * Called on every settings-tab render (a GET, not a save) — a page load
+     * alone is enough to guarantee a key exists, independent of whether the
+     * settings form's own save/POST path is reachable. Auto-generation here
+     * does not flash the raw key (no redirect happens on a plain render) —
+     * only an explicit Reset does that.
+     */
+    private static function ensure_key_exists(): void
+    {
+        if (get_option(WICKET_REPORTER_OPTION_API_KEY_HASH, '')) {
+            return;
+        }
+
+        self::generate_and_store_key();
+
+        Reporter_Log::info('API key auto-generated (none existed)');
+    }
+
+    /**
+     * Generates a raw key, stores only its hash, and returns the raw value
+     * to the caller (which decides whether/how to surface it once).
+     */
+    private static function generate_and_store_key(): string
+    {
+        $new_key = wp_generate_password(48, false, false);
+        update_option(WICKET_REPORTER_OPTION_API_KEY_HASH, wp_hash_password($new_key), false);
+
+        return $new_key;
     }
 
     // -------------------------------------------------------------------------
