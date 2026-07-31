@@ -57,19 +57,27 @@ hoc detection heuristic outside any scoped task.
 ## Integration adapters
 
 `includes/Integrations/interface-integration-adapter.php` defines
-`Reporter_Integration_Adapter` (`slug()`/`is_available()`/`collect()`).
-`collect()` returns `{metrics, configuration}` — kept as two separate
-top-level keys, not one blended bag: `metrics` is pure counts/usage
-numbers, `configuration` is what's set up (config/tier settings, product
-links, etc.) rather than a number. `Reporter_Integrations::collect()`
-loops the static `$adapters` list, skips one whose `is_available()` is
-false (key absent from `integrations{}`, not an error), else calls
-`collect()` and wraps the result as
-`{available, active, metrics, configuration}`. One adapter throwing is
-caught individually and reported as `collectorErrors[]` entry
+`Reporter_Integration_Adapter`
+(`slug()`/`plugin_slug()`/`is_available()`/`collect()`). `collect()`
+returns `{metrics, configuration}` — kept as two separate top-level keys,
+not one blended bag: `metrics` is pure counts/usage numbers,
+`configuration` is what's set up (config/tier settings, product links,
+etc.) rather than a number. `Reporter_Integrations::collect()` loops the
+static `$adapters` list, skips one whose `is_available()` is false (key
+absent from `integrations{}`, not an error), else calls `collect()` and
+wraps the result as
+`{available, active, pluginSlug, metrics, configuration}`. One adapter
+throwing is caught individually and reported as `collectorErrors[]` entry
 `integrations.<slug>` — it never blanks out another adapter's data.
 Registering a new adapter means adding one class plus one line to
 `$adapters` — no other file changes.
+
+`pluginSlug` is the target plugin's own directory slug, matching
+`plugins.items[].slug` elsewhere in this response (e.g. `'memberships'`'s
+`pluginSlug` is `'wicket-wp-memberships'`) — lets a consumer join
+`integrations{}` back to the installed-plugins list without guessing.
+Distinct from the adapter's own `slug()`, which is the `integrations{}`
+key it reports under, not a WordPress plugin slug.
 
 **There is no runtime schema validation on an adapter's `collect()` return
 value.** Each adapter's own `@return array{...}` PHPDoc on `collect()` is
@@ -171,6 +179,7 @@ queries per membership, no outbound calls of any kind.
 {
   "available": true,
   "active": true,
+  "pluginSlug": "wicket-wp-memberships",
   "metrics": {
     "total_memberships": 842,
     "total_active_memberships": 761,
@@ -252,6 +261,7 @@ no config/tier-style setup to report, unlike memberships.
 {
   "available": true,
   "active": true,
+  "pluginSlug": "woocommerce",
   "metrics": {
     "orders": {
       "pending": 6,
@@ -300,6 +310,7 @@ this adapter.
 {
   "available": true,
   "active": true,
+  "pluginSlug": "woocommerce-subscriptions",
   "metrics": {
     "byStatus": {
       "pending": 1,

@@ -30,6 +30,11 @@ class Memberships_Adapter implements Reporter_Integration_Adapter
         return 'memberships';
     }
 
+    public function plugin_slug(): string
+    {
+        return 'wicket-wp-memberships';
+    }
+
     public function is_available(): bool
     {
         return class_exists(\Wicket_Memberships\Helper::class) && post_type_exists(self::membership_post_type());

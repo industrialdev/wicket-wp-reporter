@@ -19,6 +19,11 @@ class Subscriptions_Adapter implements Reporter_Integration_Adapter
         return 'subscriptions';
     }
 
+    public function plugin_slug(): string
+    {
+        return 'woocommerce-subscriptions';
+    }
+
     public function is_available(): bool
     {
         return class_exists(\WC_Subscriptions::class);

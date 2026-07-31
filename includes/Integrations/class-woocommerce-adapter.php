@@ -20,6 +20,11 @@ class Woocommerce_Adapter implements Reporter_Integration_Adapter
         return 'woocommerce';
     }
 
+    public function plugin_slug(): string
+    {
+        return 'woocommerce';
+    }
+
     public function is_available(): bool
     {
         return class_exists(\WooCommerce::class);

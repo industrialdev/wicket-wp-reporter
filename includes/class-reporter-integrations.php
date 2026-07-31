@@ -53,6 +53,7 @@ class Reporter_Integrations
                 $integrations[$adapter->slug()] = [
                     'available'     => true,
                     'active'        => true,
+                    'pluginSlug'    => $adapter->plugin_slug(),
                     'metrics'       => $result['metrics'] ?? [],
                     'configuration' => $result['configuration'] ?? [],
                 ];

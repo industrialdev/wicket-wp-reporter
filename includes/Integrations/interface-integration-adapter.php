@@ -26,6 +26,16 @@ interface Reporter_Integration_Adapter
     /** integrations{} key this adapter reports under (e.g. 'memberships'). */
     public function slug(): string;
 
+    /**
+     * The target plugin's own slug, matching plugins.items[].slug in this
+     * plugin's response — lets a consumer join integrations{} back to the
+     * plugin/theme list without guessing. Not the same as slug() above:
+     * that's this adapter's own integrations{} key (e.g. 'memberships'),
+     * this is the WordPress plugin directory slug it's reporting about
+     * (e.g. 'wicket-wp-memberships').
+     */
+    public function plugin_slug(): string;
+
     /** Whether the target plugin is active on this site. */
     public function is_available(): bool;
 
