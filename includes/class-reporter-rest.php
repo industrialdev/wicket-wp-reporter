@@ -213,8 +213,9 @@ class Reporter_Rest
                 $user_counts = count_users();
 
                 return [
-                    'version' => get_bloginfo('version'),
-                    'metrics' => [
+                    'version'    => get_bloginfo('version'),
+                    'phpVersion' => PHP_VERSION,
+                    'metrics'    => [
                         'totalUsers'  => $user_counts['total_users'],
                         'usersByRole' => $user_counts['avail_roles'],
                     ],

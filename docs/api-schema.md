@@ -19,14 +19,19 @@ update available" under a naive falsy check in client code.
 call — WP core's own cheap-count API, no per-user iteration. Nested under
 `wordpress.metrics{}` rather than flat on `wordpress{}`, mirroring the
 integration adapters' `metrics`/`configuration` split: `version`/
-`latestVersion`/`updateAvailable` are identity/version fields, `metrics`
-is usage counts — a different kind of data, even though both live under
-the always-present `wordpress{}` (core isn't optional the way an
-integration adapter's target plugin is, so it doesn't move under
+`phpVersion`/`latestVersion`/`updateAvailable` are identity/version fields,
+`metrics` is usage counts — a different kind of data, even though both
+live under the always-present `wordpress{}` (core isn't optional the way
+an integration adapter's target plugin is, so it doesn't move under
 `integrations{}`, just gets its own `metrics` sub-object). `usersByRole`
 is `count_users()['avail_roles']` passed through as-is: a map of role slug
 to count, where a multi-role user is counted once per role they hold, not
 once overall (so summing `usersByRole`'s values can exceed `totalUsers`).
+
+`wordpress.phpVersion` is `PHP_VERSION` (e.g. `"8.2.15"`) — this site's
+running PHP version, not WordPress's. Reported so a fleet monitor can
+answer "can this site even upgrade WP core" (core has its own PHP
+minimums per release) independently of the WP version check itself.
 
 ## Field value reference
 
