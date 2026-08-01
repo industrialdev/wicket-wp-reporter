@@ -31,6 +31,10 @@ class Reporter_Plugins
             $slug = self::slug_from_file($file);
             $match = $by_directory[$slug] ?? null;
 
+            $update_source = null !== $match
+                ? $match['updateSource']
+                : self::detect_manual_update_source($slug);
+
             $entries[] = [
                 'file'            => $file,
                 'slug'            => $slug,
@@ -39,9 +43,8 @@ class Reporter_Plugins
                 'status'          => is_plugin_active($file) ? 'active' : 'inactive',
                 'installType'     => null !== $match ? 'composer' : self::detect_manual_install_type($slug),
                 'composerPackage' => $match['name'] ?? null,
-                'updateSource'    => null !== $match
-                    ? $match['updateSource']
-                    : self::detect_manual_update_source($slug),
+                'updateSource'    => $update_source,
+                'packageKind'     => self::package_kind_from_update_source($update_source),
                 // latestVersion/updateAvailable deliberately omitted, not
                 // set to null — M1 has no external version-lookup (see the
                 // plan's Out of scope section), so it genuinely doesn't
@@ -68,6 +71,10 @@ class Reporter_Plugins
         foreach (wp_get_themes() as $stylesheet => $theme) {
             $match = $by_directory[$stylesheet] ?? null;
 
+            $update_source = null !== $match
+                ? $match['updateSource']
+                : self::detect_manual_update_source($stylesheet, true);
+
             $entries[] = [
                 'stylesheet'      => $stylesheet,
                 'template'        => $theme->get_template(),
@@ -76,9 +83,8 @@ class Reporter_Plugins
                 'status'          => $stylesheet === $active_stylesheet ? 'active' : 'inactive',
                 'installType'     => null !== $match ? 'composer' : self::detect_manual_install_type($stylesheet, true),
                 'composerPackage' => $match['name'] ?? null,
-                'updateSource'    => null !== $match
-                    ? $match['updateSource']
-                    : self::detect_manual_update_source($stylesheet, true),
+                'updateSource'    => $update_source,
+                'packageKind'     => self::package_kind_from_update_source($update_source),
                 // See the comment in collect_plugins() — omitted, not null.
             ];
         }
@@ -140,6 +146,24 @@ class Reporter_Plugins
         }
 
         return 'unknown';
+    }
+
+    /**
+     * Git-sourced rows are Wicket-authored composer packages, not real
+     * installable WP plugins/themes — there's no wordpress.org listing or
+     * SatisPress mirror behind them, only a git ref (see
+     * update_source_from_entry()). Every other source genuinely is a plugin
+     * or theme with its own real update channel. A consumer (e.g. a fleet
+     * dashboard) can group real plugins/themes separately from
+     * `composer-package` rows without re-deriving this from `updateSource`
+     * itself. `installable` intentionally covers both plugins and themes —
+     * the caller already knows which from the section it's building
+     * (`plugins[]` vs `themes[]`), this field only needs to say whether the
+     * row is a real WP-installable unit at all.
+     */
+    private static function package_kind_from_update_source(string $update_source): string
+    {
+        return 'git' === $update_source ? 'composer-package' : 'installable';
     }
 
     private static function slug_from_file(string $plugin_file): string
