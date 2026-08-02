@@ -3,7 +3,7 @@
 Field/value reference for `GET wicket-reporter/v1/status`. This is
 documentation, not a runtime schema — there is no validation code behind
 any of this, matching the plugin's lightweight-only principle. Full design
-context: [wicket-atlas's feature-fleet-health-monitor.md](https://github.com/industrialdev/wicket-atlas/blob/main/plans/feature-fleet-health-monitor.md).
+context: [wicket-atlas's feature-fleet-health-monitor.md](https://github.com/industrialdev/wicket-atlas/blob/main/plans/archive/feature-fleet-health-monitor.md).
 
 ## Top-level response shape
 

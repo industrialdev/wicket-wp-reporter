@@ -2,7 +2,7 @@
 
 WordPress plugin that reports installed plugins, theme, WP core version, and composer state via one secured, local-only REST endpoint. It is the per-site data source for `wicket-fleet-monitor` (a separate Next.js dashboard, different repo) — this plugin makes **no outbound calls**; it only reads local state and reports it when asked.
 
-Full design: [`wicket-atlas/plans/feature-fleet-health-monitor.md`](https://github.com/industrialdev/wicket-atlas/blob/main/plans/feature-fleet-health-monitor.md) — read that plan before changing this plugin's schema, endpoint shape, or settings.
+Full design: [`wicket-atlas/plans/feature-fleet-health-monitor.md`](https://github.com/industrialdev/wicket-atlas/blob/main/plans/archive/feature-fleet-health-monitor.md) — read that plan before changing this plugin's schema, endpoint shape, or settings.
 
 ## Development Commands
 

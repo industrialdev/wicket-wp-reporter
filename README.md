@@ -2,7 +2,7 @@
 
 Reports installed plugins, theme, WordPress core, and composer state via a single secured, local-only REST endpoint — the per-site data source for [`wicket-fleet-monitor`](https://github.com/industrialdev/wicket-fleet-monitor)'s fleet-wide health dashboard.
 
-Part of the Fleet Health Monitor project. Plan and full design: [`wicket-atlas/plans/feature-fleet-health-monitor.md`](https://github.com/industrialdev/wicket-atlas/blob/main/plans/feature-fleet-health-monitor.md).
+Part of the Fleet Health Monitor project. Plan and full design: [`wicket-atlas/plans/feature-fleet-health-monitor.md`](https://github.com/industrialdev/wicket-atlas/blob/main/plans/archive/feature-fleet-health-monitor.md).
 
 ## What it does
 
