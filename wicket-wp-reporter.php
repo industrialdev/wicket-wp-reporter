@@ -48,6 +48,9 @@ add_filter('wicket_settings_tab_int', ['Reporter_Settings', 'extend_settings_tab
 // via a short-lived transient (see admin_notices hook below).
 add_action('admin_init', ['Reporter_Settings', 'maybe_handle_reset']);
 
+// S1: one-time notice when a legacy key hash gets rotated on tab render.
+add_action('admin_notices', ['Reporter_Settings', 'show_legacy_rotation_notice']);
+
 /**
  * Show a newly generated/reset raw API key once, immediately after the
  * GET-link reset redirect lands back on this tab.

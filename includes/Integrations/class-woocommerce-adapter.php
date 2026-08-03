@@ -89,7 +89,11 @@ class Woocommerce_Adapter implements Reporter_Integration_Adapter
      */
     private static function count_users_by_role(): array
     {
-        $counts = count_users();
+        // P1: count_users() is CPU-intensive (one COUNT column per role over
+        // every wp_capabilities usermeta row). It is already computed once
+        // per request by Reporter_Rest::user_counts() for the wordpress{}
+        // section; reuse that memo rather than running it a second time.
+        $counts = Reporter_Rest::user_counts();
 
         return [
             'total'  => $counts['total_users'],

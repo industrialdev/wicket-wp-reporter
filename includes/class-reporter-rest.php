@@ -31,19 +31,58 @@ class Reporter_Rest
             'callback'            => [__CLASS__, 'handle_status'],
             'permission_callback' => [__CLASS__, 'check_permission'],
         ]);
+
+        // M1: bearer auth never establishes a WP user, so WP's default
+        // is_user_logged_in() gate sends NO nocache headers. Without this,
+        // a full site inventory (plugin list, versions, private repo slugs,
+        // commit references) ships with no Cache-Control and can be cached
+        // by an intermediary or misconfigured edge and served to an
+        // unauthenticated requester. Scope the nocache gate to this route.
+        add_filter('rest_send_nocache_headers', [__CLASS__, 'force_nocache_for_status']);
     }
 
     /**
-     * Permission callback: disabled check, then bearer-token auth, then
-     * rate limit. Order matters — disabled sites reveal nothing about
-     * whether a key is valid, and a valid-but-throttled key still 429s
-     * rather than 401.
+     * Forces WP's REST nocache headers, but only for this plugin's route —
+     * leaving every other REST endpoint's caching policy untouched.
+     */
+    public static function force_nocache_for_status(bool $nocache): bool
+    {
+        $uri = isset($_SERVER['REQUEST_URI']) ? (string) $_SERVER['REQUEST_URI'] : '';
+
+        if (
+            false !== strpos($uri, '/wicket-reporter/v1/')
+            || false !== strpos($uri, 'rest_route=/wicket-reporter/v1/')
+        ) {
+            return true;
+        }
+
+        return $nocache;
+    }
+
+    /**
+     * Permission callback: availability guard, disabled check, bearer-token
+     * auth, then rate limit. Order matters — an unavailable site (base
+     * plugin missing) 503s before touching undefined helpers; disabled sites
+     * reveal nothing about whether a key is valid; a valid-but-throttled
+     * key still 429s rather than 401.
      *
      * @param WP_REST_Request $request
      * @return true|WP_Error
      */
     public static function check_permission(WP_REST_Request $request)
     {
+        // S5: wicket_get_option()/Wicket()->log() come from wicket-wp-base-plugin.
+        // The admin_init self-deactivation guard only covers wp-admin, not
+        // REST — without this guard a REST hit after base-plugin removal
+        // would call an undefined function and fatal to a stack trace.
+        if (!function_exists('wicket_get_option')) {
+            return new WP_Error(
+                'wicket_reporter_unavailable',
+                __('Wicket Reporter is unavailable on this site.', 'wicket-reporter'),
+                ['status' => 503]
+            );
+        }
+
         if ('1' !== wicket_get_option('wicket_reporter_enabled')) {
             return new WP_Error(
                 'wicket_reporter_disabled',
@@ -55,7 +94,16 @@ class Reporter_Rest
         $token = self::get_bearer_token($request);
         $stored_hash = get_option(WICKET_REPORTER_OPTION_API_KEY_HASH, '');
 
-        if ('' === $token || '' === $stored_hash || !wp_check_password($token, $stored_hash)) {
+        // S1: API keys are 48-char CSPRNG tokens (~285 bits), so the slow
+        // password hashing wp_check_password() applies is pure overhead AND
+        // a CPU-amplification DoS vector on this unauthenticated endpoint
+        // (any caller sending 'Authorization: Bearer x' forced a bcrypt
+        // verify, unthrottled, since the rate limit runs only after auth).
+        // Store and compare a fast SHA-256 with hash_equals() (constant-
+        // time). A legacy bcrypt/phpass hash has a different length and
+        // simply fails this compare; it is rotated on the next settings-tab
+        // render (Reporter_Settings::ensure_key_exists).
+        if ('' === $token || '' === $stored_hash || !hash_equals(Reporter_Settings::hash_token($token), $stored_hash)) {
             Reporter_Log::warning('REST request rejected: missing or invalid API key');
 
             return new WP_Error(
@@ -72,6 +120,24 @@ class Reporter_Rest
         }
 
         return true;
+    }
+
+    /** @var array<string,int>|null Memoized count_users() result. */
+    private static ?array $user_counts = null;
+
+    /**
+     * count_users() shared across the wordpress{} collector and the
+     * WooCommerce adapter. It is a CPU-intensive scan over every
+     * wp_capabilities usermeta row (one COUNT column per role), and was
+     * being computed twice per cache miss. Memoized once per request.
+     */
+    public static function user_counts(): array
+    {
+        if (null === self::$user_counts) {
+            self::$user_counts = count_users();
+        }
+
+        return self::$user_counts;
     }
 
     /**
@@ -137,11 +203,42 @@ class Reporter_Rest
             return new WP_REST_Response($cached, 200);
         }
 
-        $body = self::build_status_body();
+        // M3: coalesce concurrent cache-miss builds with a short lock. A
+        // slow or timed-out generation can otherwise be re-triggered by
+        // every incoming request up to the rate limit — a self-sustaining
+        // load spike with no back-off (and the heaviest collectors, on a
+        // large member site, are exactly the ones that can time out).
+        // First request in builds; the rest get 503 + Retry-After. The
+        // TTL is the safety net if the builder dies before `finally`.
+        $lock_key = WICKET_REPORTER_TRANSIENT_PREFIX . 'status_build_lock';
 
-        set_transient(self::CACHE_KEY, $body, self::CACHE_TTL_SECONDS);
+        if (false !== get_transient($lock_key)) {
+            return new WP_REST_Response(
+                ['error' => 'status_generation_in_progress'],
+                503,
+                ['Retry-After' => '5']
+            );
+        }
 
-        return new WP_REST_Response($body, 200);
+        set_transient($lock_key, 1, 30);
+
+        try {
+            // Re-check after winning the lock: another request may have
+            // just finished building while this one was queued.
+            $cached = get_transient(self::CACHE_KEY);
+
+            if (false !== $cached && is_array($cached)) {
+                return new WP_REST_Response($cached, 200);
+            }
+
+            $body = self::build_status_body();
+
+            set_transient(self::CACHE_KEY, $body, self::CACHE_TTL_SECONDS);
+
+            return new WP_REST_Response($body, 200);
+        } finally {
+            delete_transient($lock_key);
+        }
     }
 
     /**
@@ -204,13 +301,16 @@ class Reporter_Rest
             // latestVersion/updateAvailable deliberately omitted, not null —
             // see the comment in Reporter_Plugins::collect_plugins() for why.
             'wordpress' => Reporter_Timer::time('wordpress', static function () {
-                // count_users() is WP core's own cheap-count API — one
-                // query, no per-user iteration. Nested under its own
-                // metrics{} rather than flat on wordpress{} — same
-                // identity-vs-usage split the integration adapters use,
-                // since version/latestVersion/updateAvailable are a
-                // different kind of field than usage counts.
-                $user_counts = count_users();
+                // count_users() is CPU-intensive: one COUNT column per
+                // role applied to every wp_capabilities usermeta row, not
+                // the cheap one-query call earlier comments claimed. So it
+                // is memoized once per request via user_counts() and shared
+                // with the WooCommerce adapter. Nested under metrics{}
+                // rather than flat on wordpress{} — same identity-vs-usage
+                // split the integration adapters use, since
+                // version/latestVersion/updateAvailable are a different
+                // kind of field than usage counts.
+                $user_counts = self::user_counts();
 
                 return [
                     'version'    => get_bloginfo('version'),

@@ -241,23 +241,100 @@ class Reporter_Settings
     }
 
     /**
-     * Generates and stores an API key (hash only) if one doesn't exist yet.
-     *
-     * Called on every settings-tab render (a GET, not a save) — a page load
-     * alone is enough to guarantee a key exists, independent of whether the
-     * settings form's own save/POST path is reachable. Auto-generation here
-     * does not flash the raw key (no redirect happens on a plain render) —
-     * only an explicit Reset does that.
+     * One-time notice shown after a legacy bcrypt/phpass key hash was
+     * rotated to the fast-hash format on settings-tab render (see
+     * ensure_key_exists). The old key no longer authenticates; the admin
+     * must Reset to get the new raw key and re-register the site.
      */
-    private static function ensure_key_exists(): void
+    public static function show_legacy_rotation_notice(): void
     {
-        if (get_option(WICKET_REPORTER_OPTION_API_KEY_HASH, '')) {
+        if (!current_user_can('manage_options')) {
             return;
         }
 
+        $transient_key = 'wicket_reporter_legacy_rotated_' . get_current_user_id();
+
+        if (false === get_transient($transient_key)) {
+            return;
+        }
+
+        delete_transient($transient_key);
+
+        $reset_url = wp_nonce_url(
+            add_query_arg(
+                [
+                    'page'                  => 'wicket-settings',
+                    'tab'                   => 'integrations',
+                    'section'               => 'wicket-reporter',
+                    'wicket_reporter_reset' => '1',
+                ],
+                admin_url('admin.php')
+            ),
+            'wicket_reporter_reset_key'
+        );
+
+        printf(
+            '<div class="notice notice-warning is-dismissible"><p><strong>%s</strong></p><p>%s</p><p><a href="%s" class="button button-secondary">%s</a></p></div>',
+            esc_html__('Wicket Reporter API key upgraded.', 'wicket-reporter'),
+            esc_html__('The stored API key used an older security format and has been replaced. The previous key no longer works. Reset to view the new key and re-register this site with the fleet monitor.', 'wicket-reporter'),
+            esc_url($reset_url),
+            esc_html__('Reset API key', 'wicket-reporter')
+        );
+    }
+
+    /**
+     * Generates and stores an API key (hash only) if none exists, and
+     * rotates any legacy bcrypt/phpass hash to the current fast-hash
+     * format. Called on every settings-tab render (a GET) — a page load
+     * alone guarantees a verifiable key exists.
+     *
+     * Legacy hashes (wp_hash_password output, pre-hardening) can't be
+     * verified by the current SHA-256 compare, so any old key already
+     * stopped authenticating the moment this code shipped. Detecting one
+     * here and replacing it clears the stale hash and makes the field
+     * honest; the raw new key is not flashed on this path, so the admin is
+     * shown a one-time notice to Reset and re-register the site.
+     */
+    private static function ensure_key_exists(): void
+    {
+        $stored = get_option(WICKET_REPORTER_OPTION_API_KEY_HASH, '');
+
+        if ('' !== $stored && !self::is_legacy_key_hash($stored)) {
+            return;
+        }
+
+        $was_legacy = '' !== $stored;
         self::generate_and_store_key();
 
-        Reporter_Log::info('API key auto-generated (none existed)');
+        if ($was_legacy) {
+            set_transient('wicket_reporter_legacy_rotated_' . get_current_user_id(), 1, 300);
+            Reporter_Log::info('Legacy API key hash rotated to fast-hash format');
+        } else {
+            Reporter_Log::info('API key auto-generated (none existed)');
+        }
+    }
+
+    /**
+     * A current key hash is a 64-char lowercase hex SHA-256. Anything else
+     * is a legacy wp_hash_password() output (bcrypt $2y$, phpass $P$, or
+     * the $wp wrapper) the current verifier cannot match.
+     */
+    private static function is_legacy_key_hash(string $hash): bool
+    {
+        return ! (64 === strlen($hash) && ctype_xdigit($hash));
+    }
+
+    /**
+     * Stable, fast hash of a raw API key for storage and comparison — the
+     * single source of truth shared with Reporter_Rest::check_permission().
+     * SHA-256 of a 285-bit CSPRNG token: no offline brute-force threat
+     * exists, so the slow KDF human passwords need is unnecessary here and
+     * only adds latency plus a CPU-amplification DoS surface on the public
+     * endpoint. The caller compares with hash_equals() for constant time.
+     */
+    public static function hash_token(string $token): string
+    {
+        return hash('sha256', $token);
     }
 
     /**
@@ -267,7 +344,7 @@ class Reporter_Settings
     private static function generate_and_store_key(): string
     {
         $new_key = wp_generate_password(48, false, false);
-        update_option(WICKET_REPORTER_OPTION_API_KEY_HASH, wp_hash_password($new_key), false);
+        update_option(WICKET_REPORTER_OPTION_API_KEY_HASH, self::hash_token($new_key), false);
 
         return $new_key;
     }
