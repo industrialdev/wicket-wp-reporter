@@ -48,8 +48,9 @@ wicket-wp-reporter/
 
 The API key field (`Reporter_Settings::render_api_key_field`) is a **custom-rendered field**, not a normal WPSettings option value — only the key's hash is ever WPSettings-managed-adjacent storage; the real value lives in its own standalone `wicket_reporter_api_key_hash` option. Reset is a plain nonce-protected GET link handled by `Reporter_Settings::maybe_handle_reset()` on `admin_init`, entirely separate from the tab's own Save Changes submit.
 
-- Raw key: `wp_generate_password(48, false, false)`.
-- Stored: only its hash, via `wp_hash_password()`/`wp_check_password()` (WordPress's own password-hashing pair — explicitly documented as safe to use for non-user-password values, not a misuse here).
+- Raw key: `wp_generate_password(48, false, false)` (~285 bits of entropy).
+- Stored: only its hash, via `Reporter_Settings::hash_token()` — `hash('sha256', $token)`, compared with `hash_equals()` (constant-time). Not `wp_hash_password()`/`wp_check_password()` (bcrypt) — a CSPRNG token this long has no offline brute-force threat, so the slow password KDF was pure overhead and an unthrottled CPU-amplification DoS vector on the public REST endpoint.
+- Legacy bcrypt/phpass hashes (any stored value that isn't 64 lowercase-hex chars, per `Reporter_Settings::is_legacy_key_hash()`) are rotated automatically on the next settings-tab render (`ensure_key_exists()`) and can no longer authenticate — the admin sees a one-time notice (`show_legacy_rotation_notice()`) prompting a Reset and re-registration with the fleet monitor.
 - Shown once: flashed via a 60-second, current-user-scoped transient, read and deleted in the same `admin_notices` request — a page refresh never shows the raw key twice. Afterward the field shows a masked placeholder, never the real value.
 - Regenerating immediately invalidates the previous key (single stored hash, no key history).
 
