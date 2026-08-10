@@ -4,7 +4,7 @@
  * Plugin Name:       Wicket Reporter
  * Plugin URI:        https://github.com/industrialdev/wicket-wp-reporter
  * Description:       Reports installed plugins, theme, WP core, and composer state via a secured local-only REST endpoint, for fleet-wide health monitoring.
- * Version:           1.0.1
+ * Version:           1.1.0
  * Requires at least: 6.5
  * Requires PHP:      8.1
  * Author:            Wicket

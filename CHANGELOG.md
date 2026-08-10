@@ -5,6 +5,12 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 <!-- new releases inserted below this line -->
 
+## [1.1.0] - 2026-08-10
+
+### Fixed
+- **BREAKING** harden reporter auth, caching, and memberships queries
+
+
 ## [1.0.1] - 2026-08-02
 
 ### Added
