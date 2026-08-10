@@ -122,37 +122,74 @@ class Memberships_Adapter implements Reporter_Integration_Adapter
         return $array;
     }
 
+    /**
+     * wp_count_posts() is core's own count API — one query. M6: sum every
+     * status except trash and auto-draft so totals match what an admin sees
+     * in the list table, not a figure padded with deleted or junk rows.
+     */
     private static function count_posts(string $post_type): int
     {
         $counts = wp_count_posts($post_type);
+        $total = 0;
 
-        return array_sum((array) $counts);
+        foreach ((array) $counts as $status => $n) {
+            if (in_array($status, ['trash', 'auto-draft'], true)) {
+                continue;
+            }
+
+            $total += (int) $n;
+        }
+
+        return $total;
     }
 
     /**
-     * A membership's status lives in the `membership_status` post meta
-     * (not a taxonomy), so wp_count_posts() alone can't filter it — one
-     * meta_query-filtered WP_Query, ids-only, reading found_posts rather
-     * than materializing post objects.
+     * P2: counts memberships whose membership_status is one of the active
+     * statuses (and optionally whose membership_tier_uuid is in a given
+     * set) with a true SELECT COUNT(*) + correlated EXISTS — not
+     * WP_Query's found_posts, which forces SQL_CALC_FOUND_ROWS and
+     * materializes the entire result set of an unindexed postmeta
+     * meta_value scan. EXISTS keeps it a count, never a row materialization,
+     * and never double-counts a post that carries the meta key twice.
      */
+    private static function count_memberships(array $tier_uuids = []): int
+    {
+        global $wpdb;
+
+        $statuses = self::ACTIVE_STATUSES;
+        $status_placeholders = implode(',', array_fill(0, count($statuses), '%s'));
+
+        $sql = "SELECT COUNT(*) FROM {$wpdb->posts} p
+            WHERE p.post_type = %s
+              AND p.post_status != 'trash'
+              AND EXISTS (
+                  SELECT 1 FROM {$wpdb->postmeta} s
+                  WHERE s.post_id = p.ID
+                    AND s.meta_key = %s
+                    AND s.meta_value IN ({$status_placeholders})
+              )";
+
+        $params = array_merge([self::membership_post_type(), 'membership_status'], $statuses);
+
+        if ([] !== $tier_uuids) {
+            $tier_placeholders = implode(',', array_fill(0, count($tier_uuids), '%s'));
+
+            $sql .= " AND EXISTS (
+                SELECT 1 FROM {$wpdb->postmeta} t
+                WHERE t.post_id = p.ID
+                  AND t.meta_key = %s
+                  AND t.meta_value IN ({$tier_placeholders})
+            )";
+
+            $params = array_merge($params, ['membership_tier_uuid'], array_values($tier_uuids));
+        }
+
+        return (int) $wpdb->get_var($wpdb->prepare($sql, $params));
+    }
+
     private static function count_active_memberships(): int
     {
-        $query = new WP_Query([
-            'post_type'      => self::membership_post_type(),
-            'post_status'    => 'any',
-            'fields'         => 'ids',
-            'posts_per_page' => 1,
-            'no_found_rows'  => false,
-            'meta_query'     => [
-                [
-                    'key'     => 'membership_status',
-                    'value'   => self::ACTIVE_STATUSES,
-                    'compare' => 'IN',
-                ],
-            ],
-        ]);
-
-        return $query->found_posts;
+        return self::count_memberships();
     }
 
     /**
@@ -243,6 +280,12 @@ class Memberships_Adapter implements Reporter_Integration_Adapter
             'posts_per_page' => -1,
         ]);
 
+        // M4: same N+1 fix as build_tier_info_map() — the loop below calls
+        // get_post() plus three get_post_meta() per config.
+        if ([] !== $config_ids) {
+            _prime_post_caches($config_ids, false, true);
+        }
+
         $breakdown = [];
 
         foreach ($config_ids as $config_post_id) {
@@ -256,33 +299,8 @@ class Memberships_Adapter implements Reporter_Integration_Adapter
 
             // No tiers under this config -> no membership can reference it,
             // so there's nothing to query; report 0 active rather than run
-            // a WP_Query with an empty IN clause.
-            $active_count = 0;
-
-            if ([] !== $tier_uuids) {
-                $query = new WP_Query([
-                    'post_type'      => self::membership_post_type(),
-                    'post_status'    => 'any',
-                    'fields'         => 'ids',
-                    'posts_per_page' => 1,
-                    'no_found_rows'  => false,
-                    'meta_query'     => [
-                        'relation' => 'AND',
-                        [
-                            'key'     => 'membership_status',
-                            'value'   => self::ACTIVE_STATUSES,
-                            'compare' => 'IN',
-                        ],
-                        [
-                            'key'     => 'membership_tier_uuid',
-                            'value'   => $tier_uuids,
-                            'compare' => 'IN',
-                        ],
-                    ],
-                ]);
-
-                $active_count = $query->found_posts;
-            }
+            // a COUNT with an empty IN clause.
+            $active_count = [] !== $tier_uuids ? self::count_memberships($tier_uuids) : 0;
 
             $raw_cycle_data = get_post_meta($config_post_id, 'cycle_data', true);
             $cycle_data = is_array($raw_cycle_data) ? $raw_cycle_data : [];
@@ -389,6 +407,13 @@ class Memberships_Adapter implements Reporter_Integration_Adapter
             'fields'         => 'ids',
             'posts_per_page' => -1,
         ]);
+
+        // M4: get_posts(['fields' => 'ids']) skips post + meta priming, so
+        // the per-tier get_post_meta() below would be one query each (N+1).
+        // Prime them in one batch instead.
+        if ([] !== $tier_ids) {
+            _prime_post_caches($tier_ids, false, true);
+        }
 
         $map = [];
 
