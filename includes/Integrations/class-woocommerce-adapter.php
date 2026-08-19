@@ -68,7 +68,11 @@ class Woocommerce_Adapter implements Reporter_Integration_Adapter
         $counts = [];
 
         foreach (array_keys(wc_get_order_statuses()) as $status) {
-            $unprefixed = str_replace('wc-', '', $status);
+            // Anchored to the start: str_replace('wc-', '', $status) strips
+            // the substring anywhere, so a custom status containing "wc-"
+            // mid-string (e.g. "wc-awaiting-wc-review") would be mangled
+            // and mis-keyed instead of just having its leading prefix cut.
+            $unprefixed = preg_replace('/^wc-/', '', $status);
             $counts[$unprefixed] = wc_orders_count($unprefixed);
         }
 

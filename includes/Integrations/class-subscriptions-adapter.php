@@ -58,7 +58,10 @@ class Subscriptions_Adapter implements Reporter_Integration_Adapter
         $counts = [];
 
         foreach (array_keys(wcs_get_subscription_statuses()) as $status) {
-            $unprefixed = str_replace('wc-', '', $status);
+            // Anchored, same reasoning as Woocommerce_Adapter's order-status
+            // loop — str_replace('wc-', '', $status) strips the substring
+            // anywhere, not just the leading prefix.
+            $unprefixed = preg_replace('/^wc-/', '', $status);
             $counts[$unprefixed] = wc_orders_count($unprefixed, 'shop_subscription');
         }
 
