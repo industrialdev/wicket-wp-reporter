@@ -207,9 +207,11 @@ class VersionBumper
         fwrite(STDERR, "New version: {$newVersion}\n");
 
         $successCount = 0;
+        $modifiedFiles = [];
         foreach ($this->filesToUpdate as $file) {
             if ($this->updateVersionInFile($file, $newVersion)) {
                 fwrite(STDERR, "Updated version in {$file}\n");
+                $modifiedFiles[] = $file;
                 $successCount++;
             }
         }
@@ -225,7 +227,14 @@ class VersionBumper
 
         fwrite(STDERR, "Version bump completed: {$this->currentVersion} -> {$newVersion}\n");
 
-        // Machine-readable result on STDOUT (last line) for CI capture.
+        // Machine-readable output on STDOUT for CI capture. The files this run
+        // actually modified come first, one per line, so the release workflow can
+        // stage exactly those paths instead of globbing. The version stays the
+        // LAST line, which is the existing contract (callers use `| tail -1`).
+        foreach ($modifiedFiles as $file) {
+            echo 'file: ' . $file . "\n";
+        }
+
         echo $newVersion . "\n";
     }
 }
