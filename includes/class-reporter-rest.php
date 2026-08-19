@@ -457,10 +457,26 @@ class Reporter_Rest
      * site.name from get_bloginfo('name'), site.environment from
      * wp_get_environment_type() unless the settings override is set.
      */
+    /**
+     * Every value the settings dropdown (Reporter_Settings::register_settings)
+     * can legally write, besides the empty "Auto-detect" default.
+     */
+    private const VALID_ENVIRONMENT_OVERRIDES = ['production', 'staging', 'development', 'sandbox'];
+
     private static function get_site_info(): array
     {
         $override = wicket_get_option('wicket_reporter_environment_override', '');
-        $environment = '' !== $override ? $override : wp_get_environment_type();
+
+        // The settings dropdown constrains input to the list above, but this
+        // reads from the shared wicket_settings option, which
+        // wicket-wp-portus also writes during config import — so the value
+        // can arrive from an import, not only the dropdown. site.environment
+        // feeds staging-only guardrails elsewhere in this stack (see
+        // wicket-cloudways-ssh-debug), so an unvalidated or malformed value
+        // here is a safety-rail bypass, not just a cosmetic wrong label.
+        $environment = (is_string($override) && in_array($override, self::VALID_ENVIRONMENT_OVERRIDES, true))
+            ? $override
+            : wp_get_environment_type();
 
         $host = wp_parse_url(home_url(), PHP_URL_HOST) ?: home_url();
         $site_id = sanitize_title(str_replace('.', '-', (string) $host));
