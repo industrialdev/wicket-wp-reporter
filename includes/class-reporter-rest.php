@@ -17,7 +17,7 @@ class Reporter_Rest
     private const ROUTE = '/status';
 
     /** Rate limit: max requests per key within the window below. */
-    private const RATE_LIMIT_MAX_REQUESTS = 60;
+    private const RATE_LIMIT_MAX_REQUESTS = 120;
     private const RATE_LIMIT_WINDOW_SECONDS = 60;
 
     /** 8h flat TTL, matching the stack-wide caching policy. No early-bust hooks — TTL-only, by design. */
@@ -159,21 +159,27 @@ class Reporter_Rest
     }
 
     /**
-     * Per-key transient counter rate limit, same shape as
-     * WicketGuestPaymentAuth's failed-attempt counter
-     * (wicket-wp-guest-checkout/src/WicketGuestPaymentAuth.php).
+     * Per-key transient counter rate limit, keyed on a hash of the raw token
+     * (never the token itself, so the transient name doesn't itself become a
+     * place the raw key sits in plaintext) rather than the API key's own
+     * stored hash, since a transient name has a length ceiling and this only
+     * needs to be a stable, collision-resistant identifier for the same key.
      *
-     * Keyed on a hash of the raw token (never the token itself, so the
-     * transient name doesn't itself become a place the raw key sits in
-     * plaintext) rather than the API key's own stored hash, since a
-     * transient name has a length ceiling and this only needs to be a
-     * stable, collision-resistant identifier for the same key.
+     * The key includes a fixed time bucket (floor(time() / WINDOW)), not just
+     * the token hash. set_transient() rewrites the transient's expiry on
+     * every write, including an update to a transient that already exists —
+     * a counter keyed on the token alone would have its window pushed
+     * forward by every accepted request, so a steady caller near the ceiling
+     * could extend the window it has to wait out indefinitely. Bucketing by
+     * time makes the window fixed: a write inside one bucket cannot affect
+     * the next bucket's key, so the limit always clears within one window.
      *
      * @return WP_Error|null Error to return (429) if the limit is exceeded, else null.
      */
     private static function check_rate_limit(string $token): ?WP_Error
     {
-        $transient_key = WICKET_REPORTER_TRANSIENT_PREFIX . 'ratelimit_' . md5($token);
+        $bucket = (int) floor(time() / self::RATE_LIMIT_WINDOW_SECONDS);
+        $transient_key = WICKET_REPORTER_TRANSIENT_PREFIX . 'ratelimit_' . md5($token) . '_' . $bucket;
         $count = (int) get_transient($transient_key);
 
         if ($count >= self::RATE_LIMIT_MAX_REQUESTS) {
