@@ -123,21 +123,22 @@ class Memberships_Adapter implements Reporter_Integration_Adapter
     }
 
     /**
-     * wp_count_posts() is core's own count API — one query. M6: sum every
-     * status except trash and auto-draft so totals match what an admin sees
-     * in the list table, not a figure padded with deleted or junk rows.
+     * Every status a real membership, tier, or config post can be in while
+     * it still counts toward a total. An explicit allowlist, not a denylist
+     * that grows an exception per unwanted status as they turn up — a
+     * denylist of ['trash', 'auto-draft'] previously let 'draft' through,
+     * so a membership that was never published counted toward
+     * total_memberships alongside genuinely active ones.
      */
+    private const COUNTABLE_STATUSES = ['publish', 'private', 'pending', 'future'];
+
     private static function count_posts(string $post_type): int
     {
         $counts = Reporter_Post_Status_Counts::for_post_type($post_type);
         $total = 0;
 
-        foreach ($counts as $status => $n) {
-            if (in_array($status, ['trash', 'auto-draft'], true)) {
-                continue;
-            }
-
-            $total += $n;
+        foreach (self::COUNTABLE_STATUSES as $status) {
+            $total += $counts[$status] ?? 0;
         }
 
         return $total;

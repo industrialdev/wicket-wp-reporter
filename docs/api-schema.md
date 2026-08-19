@@ -131,10 +131,10 @@ adapter.
 
 | Field | Type | Meaning |
 |---|---|---|
-| `total_memberships` | int | All `wicket_membership` posts, any status. |
+| `total_memberships` | int | `wicket_membership` posts with status `publish`, `private`, `pending`, or `future` — excludes `draft`, `trash`, and `auto-draft`. A membership post that was never published does not count. |
 | `total_active_memberships` | int | Memberships whose `membership_status` meta is `active`, `grace_period`, or `delayed` — matches wicket-wp-memberships' own internal "in force" definition, not just the literal `active` status. |
-| `total_tiers` | int | All `wicket_mship_tier` posts. |
-| `total_configs` | int | All `wicket_mship_config` posts. |
+| `total_tiers` | int | `wicket_mship_tier` posts, same status set as `total_memberships`. |
+| `total_configs` | int | `wicket_mship_config` posts, same status set as `total_memberships`. |
 | `active_by_config[].config` | string | The config post's slug (`post_name`) — join key against `configuration.configs[].config`. |
 | `active_by_config[].active` | int | In-force memberships (same 3-status definition as `total_active_memberships`) whose tier belongs to this config. Every config appears here, even one with zero tiers or zero active memberships. |
 
