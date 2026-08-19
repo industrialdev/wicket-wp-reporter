@@ -32,6 +32,19 @@ class Reporter_Rest
     private const CACHE_TTL_SECONDS = 8 * HOUR_IN_SECONDS;
     private const CACHE_KEY = WICKET_REPORTER_TRANSIENT_PREFIX . 'status_response';
 
+    /**
+     * Longer-lived copy of the same body, written alongside the fresh cache
+     * on every successful build. Serves lock-contention callers (see
+     * handle_status()) so an expired cache degrades to slightly-stale data
+     * instead of a 503 with no body — the monitor treats any non-2xx as a
+     * hard failure and drops the site from the dashboard entirely, so a
+     * cold-cache 503 on the first request after every 8h expiry blanked a
+     * site out rather than showing it slightly behind.
+     */
+    private const STALE_CACHE_KEY = WICKET_REPORTER_TRANSIENT_PREFIX . 'status_response_stale';
+    private const STALE_CACHE_TTL_SECONDS = 48 * HOUR_IN_SECONDS;
+    private const STALE_HEADER = 'X-Wicket-Reporter-Stale';
+
     public static function register_routes(): void
     {
         register_rest_route(self::NAMESPACE, self::ROUTE, [
@@ -255,6 +268,15 @@ class Reporter_Rest
         $lock_key = WICKET_REPORTER_TRANSIENT_PREFIX . 'status_build_lock';
 
         if (false !== get_transient($lock_key)) {
+            $stale = get_transient(self::STALE_CACHE_KEY);
+
+            if (false !== $stale && is_array($stale)) {
+                return new WP_REST_Response($stale, 200, [self::STALE_HEADER => '1']);
+            }
+
+            // Genuinely nothing to serve — this is the first-ever build, or
+            // the stale copy has also expired (48h with no successful
+            // build). Only path left is asking the caller to wait.
             return new WP_REST_Response(
                 ['error' => 'status_generation_in_progress'],
                 503,
@@ -276,6 +298,7 @@ class Reporter_Rest
             $body = self::build_status_body();
 
             set_transient(self::CACHE_KEY, $body, self::CACHE_TTL_SECONDS);
+            set_transient(self::STALE_CACHE_KEY, $body, self::STALE_CACHE_TTL_SECONDS);
 
             return new WP_REST_Response($body, 200);
         } finally {
