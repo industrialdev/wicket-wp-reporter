@@ -4,9 +4,9 @@ name: Auto version bump & tag
 # merged into main. Runs AFTER merge, so the version is computed serially from
 # main and can never collide with a version chosen inside a parallel PR.
 #
-# Bump level (default: patch). Override per-release with a marker anywhere in
-# the merge commit message. With GitHub's default squash-merge the PR title
-# becomes that message, so the marker can just go in the PR title:
+# Bump level (default: patch). Override per-release with a marker on the FIRST
+# LINE of the merge commit message. With GitHub's default squash-merge that line
+# is the PR title, so the marker goes in the PR title:
 #   - "#major" -> X.0.0
 #   - "#minor" -> x.Y.0
 #   - otherwise -> x.y.Z (patch)
@@ -70,7 +70,12 @@ jobs:
         env:
           COMMIT_MSG: ${{ github.event.head_commit.message }}
         run: |
-          msg="$COMMIT_MSG"
+          # First line only. Under squash-merge that is the PR title, which is
+          # where AGENTS.md documents the marker. Matching the whole message
+          # also matches the body, and squash-merge appends every branch commit
+          # subject to the body — so a commit reading "chore: drop #norelease
+          # from the docs" would silently suppress a real release.
+          msg="$(printf '%s\n' "$COMMIT_MSG" | head -1)"
           level="patch"
           if echo "$msg" | grep -qiE '#norelease'; then
             level="none"
