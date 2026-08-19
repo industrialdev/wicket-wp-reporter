@@ -129,15 +129,15 @@ class Memberships_Adapter implements Reporter_Integration_Adapter
      */
     private static function count_posts(string $post_type): int
     {
-        $counts = wp_count_posts($post_type);
+        $counts = Reporter_Post_Status_Counts::for_post_type($post_type);
         $total = 0;
 
-        foreach ((array) $counts as $status => $n) {
+        foreach ($counts as $status => $n) {
             if (in_array($status, ['trash', 'auto-draft'], true)) {
                 continue;
             }
 
-            $total += (int) $n;
+            $total += $n;
         }
 
         return $total;

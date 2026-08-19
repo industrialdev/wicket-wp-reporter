@@ -104,8 +104,6 @@ class Woocommerce_Adapter implements Reporter_Integration_Adapter
     /** wp_count_posts() is core's own cheap-count API — one query, no per-row iteration. */
     private static function count_posts_by_status(string $post_type, string $status): int
     {
-        $counts = wp_count_posts($post_type);
-
-        return (int) ($counts->{$status} ?? 0);
+        return Reporter_Post_Status_Counts::for_post_type($post_type)[$status] ?? 0;
     }
 }
