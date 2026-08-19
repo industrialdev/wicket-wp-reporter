@@ -20,6 +20,14 @@ class Reporter_Rest
     private const RATE_LIMIT_MAX_REQUESTS = 120;
     private const RATE_LIMIT_WINDOW_SECONDS = 60;
 
+    /**
+     * Independent per-IP ceiling, same window, so one misbehaving caller
+     * cannot spend a shared key's whole budget. Higher than the per-key
+     * ceiling so it is a burst guard, not the binding limit in normal
+     * operation — the per-key ceiling stays the real budget.
+     */
+    private const RATE_LIMIT_MAX_REQUESTS_PER_IP = 240;
+
     /** 8h flat TTL, matching the stack-wide caching policy. No early-bust hooks — TTL-only, by design. */
     private const CACHE_TTL_SECONDS = 8 * HOUR_IN_SECONDS;
     private const CACHE_KEY = WICKET_REPORTER_TRANSIENT_PREFIX . 'status_response';
@@ -113,10 +121,37 @@ class Reporter_Rest
             );
         }
 
-        $rate_limit_error = self::check_rate_limit($token);
+        $rate_limit_error = self::check_rate_limit(
+            'ratelimit_' . md5($token),
+            self::RATE_LIMIT_MAX_REQUESTS
+        );
 
         if (null !== $rate_limit_error) {
             return $rate_limit_error;
+        }
+
+        // Independent bucket, same window and mechanism, keyed on the client
+        // IP rather than the API key. REMOTE_ADDR only — never a
+        // caller-supplied header (X-Forwarded-For, Client-IP). No
+        // trusted-proxy allowlist exists anywhere in this stack, so those
+        // headers are fully attacker-controlled; keying a rate limit on one
+        // would let an attacker send a fresh value per request and land in a
+        // fresh, empty bucket every time; each is a place a new key gets
+        // written and never checked back into. On a load-balanced host
+        // REMOTE_ADDR resolves to the balancer, so fleet traffic from one
+        // host shares one bucket — the per-key ceiling above is the real
+        // limit; this is only a burst guard against a single runaway source.
+        $ip = isset($_SERVER['REMOTE_ADDR']) ? (string) $_SERVER['REMOTE_ADDR'] : '';
+
+        if ('' !== $ip) {
+            $ip_rate_limit_error = self::check_rate_limit(
+                'ratelimit_ip_' . md5($ip),
+                self::RATE_LIMIT_MAX_REQUESTS_PER_IP
+            );
+
+            if (null !== $ip_rate_limit_error) {
+                return $ip_rate_limit_error;
+            }
         }
 
         return true;
@@ -159,30 +194,31 @@ class Reporter_Rest
     }
 
     /**
-     * Per-key transient counter rate limit, keyed on a hash of the raw token
-     * (never the token itself, so the transient name doesn't itself become a
-     * place the raw key sits in plaintext) rather than the API key's own
-     * stored hash, since a transient name has a length ceiling and this only
-     * needs to be a stable, collision-resistant identifier for the same key.
+     * Fixed-window transient counter rate limit, shared by the per-key and
+     * per-IP buckets in check_permission(). $bucket_key is already a caller-
+     * chosen, collision-resistant identifier (a prefixed hash) — never the
+     * raw token or a raw IP, so the transient name doesn't itself become a
+     * place sensitive input sits in plaintext.
      *
-     * The key includes a fixed time bucket (floor(time() / WINDOW)), not just
-     * the token hash. set_transient() rewrites the transient's expiry on
-     * every write, including an update to a transient that already exists —
-     * a counter keyed on the token alone would have its window pushed
-     * forward by every accepted request, so a steady caller near the ceiling
-     * could extend the window it has to wait out indefinitely. Bucketing by
-     * time makes the window fixed: a write inside one bucket cannot affect
-     * the next bucket's key, so the limit always clears within one window.
+     * The transient key includes a fixed time bucket (floor(time() /
+     * WINDOW)), not just $bucket_key. set_transient() rewrites the
+     * transient's expiry on every write, including an update to a transient
+     * that already exists — a counter keyed on $bucket_key alone would have
+     * its window pushed forward by every accepted request, so a caller near
+     * the ceiling could extend the window it has to wait out indefinitely.
+     * Bucketing by time makes the window fixed: a write inside one bucket
+     * cannot affect the next bucket's key, so the limit always clears within
+     * one window.
      *
      * @return WP_Error|null Error to return (429) if the limit is exceeded, else null.
      */
-    private static function check_rate_limit(string $token): ?WP_Error
+    private static function check_rate_limit(string $bucket_key, int $max_requests): ?WP_Error
     {
         $bucket = (int) floor(time() / self::RATE_LIMIT_WINDOW_SECONDS);
-        $transient_key = WICKET_REPORTER_TRANSIENT_PREFIX . 'ratelimit_' . md5($token) . '_' . $bucket;
+        $transient_key = WICKET_REPORTER_TRANSIENT_PREFIX . $bucket_key . '_' . $bucket;
         $count = (int) get_transient($transient_key);
 
-        if ($count >= self::RATE_LIMIT_MAX_REQUESTS) {
+        if ($count >= $max_requests) {
             Reporter_Log::info('REST request throttled: rate limit exceeded');
 
             return new WP_Error(
