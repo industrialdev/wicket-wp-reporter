@@ -65,7 +65,18 @@ class Reporter_Plugins
     public static function collect_themes(array $composer_packages): array
     {
         $by_directory = self::index_composer_packages_by_directory($composer_packages);
-        $active_stylesheet = get_option('stylesheet');
+
+        // get_stylesheet() is core's filtered accessor
+        // (apply_filters('stylesheet', get_option('stylesheet'))) — reading
+        // the raw option bypassed that filter. WPML's per-language theme
+        // switching, and any theme-switcher/A-B plugin, filters this hook,
+        // so the raw option can name the wrong theme as active on this
+        // stack. get_template() is the matching filtered accessor for the
+        // active theme's parent, used below to also mark a child theme's
+        // parent active — it is genuinely in use, but comparing only
+        // $stylesheet === $active_stylesheet always reported it inactive.
+        $active_stylesheet = get_stylesheet();
+        $active_template = get_template();
         $entries = [];
 
         foreach (wp_get_themes() as $stylesheet => $theme) {
@@ -75,12 +86,14 @@ class Reporter_Plugins
                 ? $match['updateSource']
                 : self::detect_manual_update_source($stylesheet, true);
 
+            $is_active = $stylesheet === $active_stylesheet || $stylesheet === $active_template;
+
             $entries[] = [
                 'stylesheet'      => $stylesheet,
                 'template'        => $theme->get_template(),
                 'name'            => (string) $theme->get('Name'),
                 'version'         => (string) $theme->get('Version'),
-                'status'          => $stylesheet === $active_stylesheet ? 'active' : 'inactive',
+                'status'          => $is_active ? 'active' : 'inactive',
                 'installType'     => null !== $match ? 'composer' : self::detect_manual_install_type($stylesheet, true),
                 'composerPackage' => $match['name'] ?? null,
                 'updateSource'    => $update_source,
