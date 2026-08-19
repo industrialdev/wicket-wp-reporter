@@ -137,6 +137,7 @@ adapter.
 | `total_configs` | int | `wicket_mship_config` posts, same status set as `total_memberships`. |
 | `active_by_config[].config` | string | The config post's slug (`post_name`) — join key against `configuration.configs[].config`. |
 | `active_by_config[].active` | int | In-force memberships (same 3-status definition as `total_active_memberships`) whose tier belongs to this config. Every config appears here, even one with zero tiers or zero active memberships. |
+| `tiersOrConfigsTruncated` | bool | `true` when the tier or config enumeration behind `active_by_config[]`/`configuration.configs[]` hit its internal cap (500) — everything above is a partial view, not the whole site. `false` in normal operation. |
 
 #### `configuration` — what's set up, not a number
 

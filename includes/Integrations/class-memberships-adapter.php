@@ -25,6 +25,22 @@ class Memberships_Adapter implements Reporter_Integration_Adapter
      */
     private const ACTIVE_STATUSES = ['active', 'grace_period', 'delayed'];
 
+    /**
+     * Ceiling on the tier and config enumerations in build_tier_info_map()
+     * and build_config_data(). Both previously ran posts_per_page => -1,
+     * which contradicts this plugin's own cheap-counts-only rule: a site
+     * with an unbounded number of tiers (an importer bug, a migration, one
+     * tier per organisation) would run an unbounded fetch plus a full meta
+     * prime inside a request that already holds a 30-second build lock. 500
+     * is far above any real site's tier/config count today; hitting it is
+     * itself a signal something is wrong, which is why it is surfaced in
+     * metrics rather than silently capped.
+     */
+    private const MAX_TIERS_AND_CONFIGS = 500;
+
+    /** @var bool Set when a bounded query below hit MAX_TIERS_AND_CONFIGS. Read by collect() to surface it. */
+    private static bool $truncated = false;
+
     public function slug(): string
     {
         return 'memberships';
@@ -62,7 +78,8 @@ class Memberships_Adapter implements Reporter_Integration_Adapter
      *         total_active_memberships: int,
      *         total_tiers: int,
      *         total_configs: int,
-     *         active_by_config: array<int, array{config: string, active: int}>
+     *         active_by_config: array<int, array{config: string, active: int}>,
+     *         tiersOrConfigsTruncated: bool
      *     },
      *     configuration: array{
      *         configs: array<int, array{
@@ -84,6 +101,8 @@ class Memberships_Adapter implements Reporter_Integration_Adapter
      */
     public function collect(): array
     {
+        self::$truncated = false;
+
         $total_memberships = self::count_posts(self::membership_post_type());
         $total_active_memberships = self::count_active_memberships();
         $total_tiers = self::count_posts(self::tier_post_type());
@@ -104,6 +123,11 @@ class Memberships_Adapter implements Reporter_Integration_Adapter
                     static fn (array $config) => ['config' => $config['config'], 'active' => $config['active']],
                     $configs
                 ),
+                // True only when the tier or config enumeration hit
+                // MAX_TIERS_AND_CONFIGS — everything above is then a partial
+                // view, not the whole site. Absent no-op case stays false;
+                // this is not a silent cap.
+                'tiersOrConfigsTruncated'  => self::$truncated,
             ],
             'configuration' => [
                 'configs' => array_map(
@@ -276,10 +300,14 @@ class Memberships_Adapter implements Reporter_Integration_Adapter
 
         $config_ids = get_posts([
             'post_type'      => self::config_post_type(),
-            'post_status'    => 'any',
+            'post_status'    => array_diff(get_post_stati(), get_post_stati(['exclude_from_search' => true])),
             'fields'         => 'ids',
-            'posts_per_page' => -1,
+            'posts_per_page' => self::MAX_TIERS_AND_CONFIGS,
         ]);
+
+        if (count($config_ids) >= self::MAX_TIERS_AND_CONFIGS) {
+            self::$truncated = true;
+        }
 
         // M4: same N+1 fix as build_tier_info_map() — the loop below calls
         // get_post() plus three get_post_meta() per config.
@@ -404,10 +432,32 @@ class Memberships_Adapter implements Reporter_Integration_Adapter
     {
         $tier_ids = get_posts([
             'post_type'      => self::tier_post_type(),
-            'post_status'    => 'any',
+            // An explicit inclusion list, equal to what 'any' resolves to
+            // minus trash — every registered status except the ones flagged
+            // exclude_from_search (which is how WP_Query itself implements
+            // 'any': see WP_Query::get_posts(), it emits `!= 'x'` for each
+            // exclude_from_search status). 'trash' is already one of those,
+            // so excluding the whole exclude_from_search set covers trash
+            // without listing it separately. A trashed tier is not a real
+            // tier and its UUID should not feed the tier -> config map or
+            // the count_memberships() IN clause below.
+            //
+            // Verified against a live install rather than assumed: 'any'
+            // also excludes 'auto-draft' and every other exclude_from_search
+            // status on this site (WooCommerce's wc-* order statuses,
+            // Tribe's tribe-* statuses) — a plain
+            // array_diff(get_post_stati(), ['trash']) reintroduces all of
+            // those, which is wrong. The list below was checked to return
+            // the identical post set as 'any' on a mixed publish/draft/
+            // trash/auto-draft fixture.
+            'post_status'    => array_diff(get_post_stati(), get_post_stati(['exclude_from_search' => true])),
             'fields'         => 'ids',
-            'posts_per_page' => -1,
+            'posts_per_page' => self::MAX_TIERS_AND_CONFIGS,
         ]);
+
+        if (count($tier_ids) >= self::MAX_TIERS_AND_CONFIGS) {
+            self::$truncated = true;
+        }
 
         // M4: get_posts(['fields' => 'ids']) skips post + meta priming, so
         // the per-tier get_post_meta() below would be one query each (N+1).
