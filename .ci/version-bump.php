@@ -153,28 +153,20 @@ class VersionBumper
                 $updated = $count > 0;
                 break;
             case 'php':
-                $newContent = $content;
-                $versionPatternPart = '[0-9a-zA-Z\\.-]+';
-
-                $docblockPattern = '/(^\s*\*\s*Version:\s*)' . $versionPatternPart . '/m';
-                $tempContent = preg_replace($docblockPattern, '${1}' . $newVersion, $content, -1, $count1);
-
-                if ($count1 > 0) {
-                    $newContent = $tempContent;
-                    $updated = true;
-                } else {
-                    $plainHeaderPattern = '/(Version:\s*)' . $versionPatternPart . '/i';
-                    $tempContent = preg_replace($plainHeaderPattern, '${1}' . $newVersion, $content, -1, $count2);
-                    if ($count2 > 0) {
-                        $newContent = $tempContent;
-                        $updated = true;
-                    }
-                }
+                // Replace exactly one header line, and only one whose value is
+                // the current version. An unanchored global replace rewrites
+                // every "Version:" docblock line in the file, including
+                // unrelated ones such as an @since-style annotation or a
+                // vendored header.
+                $currentQuoted = preg_quote($this->currentVersion, '/');
+                $docblockPattern = '/(^[ \t]*\*[ \t]*Version:[ \t]*)' . $currentQuoted . '$/m';
+                $newContent = preg_replace($docblockPattern, '${1}' . $newVersion, $content, 1, $count);
+                $updated = $count > 0;
                 break;
             default:
-                $pattern = '/' . preg_quote($this->currentVersion, '/') . '/';
-                $newContent = preg_replace($pattern, $newVersion, $content, -1, $count);
-                $updated = $count > 0;
+                fwrite(STDERR, "Error: unsupported file type '{$extension}' for {$filePath}; refusing to guess.\n");
+
+                return false;
         }
 
         if ($newContent === null) {
