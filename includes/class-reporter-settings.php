@@ -119,22 +119,10 @@ class Reporter_Settings
             'default'     => '',
         ]);
 
-        // Masked key display. Custom-rendered rather than a plain 'text'
-        // option: WPSettings' own value system reads from the tab's
-        // aggregate settings option (a single nested array), but only the
-        // key's hash is ever stored (written by ensure_key_exists()/reset),
-        // and a hash can't be shown back as the real value — so this field
-        // bypasses the normal value/save pipeline entirely and just renders
-        // a masked placeholder plus a Reset link. Reset is a plain GET link
-        // (not the settings page's Save Changes/POST path, which has been
-        // unreliable for this plugin's fields on this site, for reasons not
-        // yet root-caused), handled by maybe_handle_reset()
-        // before this tab even renders, and its nonce URL explicitly targets
-        // this same tab (page=wicket-settings&tab=integrations) — clicking
-        // it always lands back here, never a generic admin.php or the tab's
-        // own root. The raw key itself is shown exactly once, via a flash
-        // notice, right after a reset (see admin_notices hook in the main
-        // plugin file).
+        // Custom-rendered: only the key's hash is stored, so there's no
+        // real value to bind to WPSettings' normal save pipeline. Reset is
+        // a separate nonce-protected GET link (see maybe_handle_reset()),
+        // not this tab's own Save Changes/POST.
         $section->add_option('text', [
             'name'        => 'api_key_display',
             'label'       => __('API Key', 'wicket-reporter'),
@@ -179,13 +167,9 @@ class Reporter_Settings
             'wicket_reporter_reset_key'
         );
 
-        // T22: every value below is escaped at the point of output (echo),
-        // not pre-escaped into a variable earlier — a variable holding an
-        // already-escaped string gives no defense-in-depth if a later edit
-        // adds unescaped content to it before the echo. The style attributes
-        // this markup used to carry inline now live in
-        // assets/css/admin-settings.css, enqueued only on this settings
-        // screen (see maybe_enqueue_admin_assets()).
+        // Escaped at the point of each echo below, not pre-escaped into a
+        // variable — no defense-in-depth otherwise if a later edit adds
+        // unescaped content before the echo.
         ob_start();
         ?>
         <tr valign="top">
@@ -206,15 +190,9 @@ class Reporter_Settings
 
     /**
      * Enqueues this plugin's admin stylesheet, but only on the Wicket
-     * settings screen where render_api_key_field() actually renders — no
-     * global admin-wide asset for a handful of layout rules used on one
-     * screen.
-     *
-     * The Wicket settings page is a top-level menu whose own submenu slug
-     * equals its parent's ('wicket-settings' registered as both, see
-     * WPSettings::add_to_menu()) — WordPress special-cases that as the
-     * parent's own click target, giving it the top-level hook suffix rather
-     * than the usual '<parent>_page_<child>' pattern.
+     * settings screen. Its hook suffix is `toplevel_page_wicket-settings`,
+     * not the usual `<parent>_page_<child>` — its submenu slug equals its
+     * parent's, which WordPress treats as the parent's own click target.
      */
     public static function maybe_enqueue_admin_assets(string $hook_suffix): void
     {
@@ -327,21 +305,11 @@ class Reporter_Settings
      * shared option itself is never deleted since other plugins' settings
      * live in it too.
      *
-     * T21: previously a raw `$wpdb` DELETE against `wp_options` rows named
-     * `_transient_wicket_reporter_%`. That only reaches transients actually
-     * stored in the options table — a site running an object cache (Redis,
-     * Memcached) stores transients there instead, where this query can
-     * never see them, so the "cleanup" silently did nothing on that class of
-     * site. delete_transient() is object-cache-aware (it calls
-     * wp_cache_delete() when a persistent object cache is active, the
-     * options-table DELETE only when it isn't), so it works either way —
-     * but it needs an exact key, which only exists for this plugin's three
-     * fixed-name transients below. The rate-limit bucket transients
-     * (Reporter_Rest::check_rate_limit()) are deliberately left alone: their
-     * names are dynamic (one per API key/IP per 60-second window, with no
-     * enumerable list of past bucket names), and every one expires within
-     * 60 seconds regardless of whether uninstall ever runs, so there is
-     * nothing a cleanup step here would actually shorten.
+     * Cleanup uses delete_transient() rather than a raw `$wpdb` DELETE, so
+     * it also reaches an object cache (Redis, Memcached), not just the
+     * options table. The rate-limit buckets are left alone — their names
+     * are dynamic per key/IP/window and each expires within 60 seconds
+     * anyway.
      */
     public static function on_uninstall(): void
     {

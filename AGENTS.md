@@ -57,13 +57,13 @@ The API key field (`Reporter_Settings::render_api_key_field`) is a **custom-rend
 
 `wicket_reporter_enabled` and `wicket_reporter_environment_override` are normal WPSettings-managed checkbox/select fields — **not** standalone wp_options rows. WPSettings stores one aggregate option (`wicket_settings`) for the whole Wicket settings page, keyed by field name. Read these at runtime with `wicket_get_option('wicket_reporter_enabled')` / `wicket_get_option('wicket_reporter_environment_override')` (base-plugin helper), never `get_option()` directly.
 
-### REST endpoint (T2)
+### REST endpoint
 
 `Reporter_Rest::register_routes()` registers `GET wicket-reporter/v1/status`. `check_permission()` runs, in order: (1) disabled check via `wicket_get_option('wicket_reporter_enabled')` → 403 if off, (2) header-only Bearer token vs the stored hash → 401 if missing/invalid, (3) per-key transient rate limit → 429 if exceeded. `handle_status()` builds the response, wrapping each collector section in `Reporter_Timer::time()`.
 
-### Composer, plugin, and theme collectors (T3, T4)
+### Composer, plugin, and theme collectors
 
-Collector order matters: `Reporter_Composer::collect()` (T4) runs **before** `Reporter_Plugins::collect_plugins()`/`collect_themes()` (T3), since T3 cross-references T4's parsed output by directory name to derive `installType`/`updateSource` per plugin/theme — see the plan's field-sourcing notes. Every collector call in `handle_status()` goes through `Reporter_Rest::run_collector()`, which wraps it in both `Reporter_Timer::time()` (audit log) and a try/catch (Endpoint resilience — a thrown exception never 500s the whole response; the section falls back to empty/null and the failure is appended to `collectorErrors[]`).
+Collector order matters: `Reporter_Composer::collect()` runs **before** `Reporter_Plugins::collect_plugins()`/`collect_themes()`, since the latter cross-references the former's parsed output by directory name to derive `installType`/`updateSource` per plugin/theme. Every collector call in `handle_status()` goes through `Reporter_Rest::run_collector()`, which wraps it in both `Reporter_Timer::time()` (audit log) and a try/catch (a thrown exception never 500s the whole response; the section falls back to empty/null and the failure is appended to `collectorErrors[]`).
 
 `Reporter_Composer::collect()` reads `composer.lock`/`composer.json` directly (`json_decode`, no `shell_exec`, no composer binary dependency), filtered to `wordpress-plugin`/`wordpress-theme`/`wordpress-muplugin`/`wordpress-core` types only — a real fleet `composer.lock` carries dozens of transitive PHP libraries (Carbon, Doctrine, etc.) that aren't WordPress-installable units and are dropped as noise.
 

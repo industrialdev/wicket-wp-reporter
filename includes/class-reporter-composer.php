@@ -171,20 +171,10 @@ class Reporter_Composer
 
     /**
      * Wicket-authored private VCS packages: `wicket/*` / `industrialdev/*`
-     * composer vendor namespace, or a package whose git source resolves to
-     * the industrialdev GitHub org specifically.
-     *
-     * Previously any package with source.type === 'git' qualified, which
-     * meant a third-party plugin installed from a fork or a tag on a
-     * different org also counted as Wicket-authored. That mattered beyond
-     * labelling: resolve_update_source() maps this to updateSource 'git',
-     * and Reporter_Plugins::package_kind_from_update_source() maps that to
-     * packageKind 'composer-package' — defined elsewhere in this codebase
-     * as "not a real installable plugin". wicket-fleet-monitor excludes
-     * composer-package rows from update checking, so a real third-party
-     * plugin from a fork silently stopped being checked for updates. This
-     * fails in the reassuring direction: an out-of-date plugin reads as
-     * "nothing to check" instead of "needs attention".
+     * composer vendor namespace, or a git source resolving to the
+     * industrialdev GitHub org specifically — not any git source, which
+     * would wrongly count a third-party fork as Wicket-authored and
+     * silently exempt it from wicket-fleet-monitor's update checks.
      */
     public static function is_wicket_git_package(string $name, array $package): bool
     {

@@ -43,8 +43,8 @@ requests directly.
 | `503` | `wicket-wp-base-plugin` is unavailable (`wicket_reporter_unavailable`), **or** the cache is cold, a build is already in progress, and no stale copy exists to fall back on. | `{code: "wicket_reporter_unavailable", ...}` for the first case (no `Retry-After`); `{error: "status_generation_in_progress"}` for the second, **with** a `Retry-After: 5` header. |
 
 **Note on the package doc**: `packages/wicket-wp-reporter.md` in Atlas
-previously stated the disabled case returns 404. It never has — 403 is the
-correct, current, and only-ever behavior for a disabled site (T25).
+previously stated the disabled case returns 404. It never has — 403 is
+correct.
 
 ### `Retry-After`
 
@@ -107,10 +107,9 @@ composer-managed (e.g. `wicket-wp-theme`, `wicket-child` — installed
 directly in `web/app/themes/`, no matching `composer.lock` entry) reports
 `installType: manual`/`updateSource: unknown`, even though it genuinely is
 a Wicket git repo. `git`-detection currently only runs off a composer
-package's namespace (T4's `is_wicket_git_package()`); there's no fallback
+package's namespace (`is_wicket_git_package()`); there's no fallback
 detection path for a non-composer-managed Wicket theme yet. Not a bug —
-just a real gap in current coverage, left open rather than adding an ad
-hoc detection heuristic outside any scoped task.
+just a real gap in current coverage.
 | `composer.items[].type` | `wordpress-plugin`, `wordpress-theme`, `wordpress-muplugin`, `wordpress-core` | The only composer package types this plugin reports. |
 | `site.environment` | `production`, `staging`, `development`, `sandbox` | From `wp_get_environment_type()` unless the settings override is set. |
 | `collectorErrors[].collector` | `composer`, `plugins`, `themes`, `integrations`, `integrations.memberships`, `integrations.woocommerce`, `integrations.subscriptions`, `wordpress`, `site` | `composer`/`plugins`/`themes`/`wordpress`/`site` match a top-level collector throwing. `integrations` matches the whole adapter registry failing to load (rare — e.g. a fatal in `Reporter_Integrations::collect()` itself). `integrations.<slug>` matches one specific adapter throwing — every other adapter's data still returns, per the per-adapter isolation in `Reporter_Integrations::collect()`. |
@@ -150,13 +149,11 @@ sync with the actual return shape.
 Never fold more than one installable plugin's data into a single adapter,
 even when one plugin depends on another. WooCommerce Subscriptions is a
 separate plugin from WooCommerce core, so `Subscriptions_Adapter` is
-separate from `Woocommerce_Adapter` — this was corrected during T9's
-build, after subscription counts were first added directly to
-`Woocommerce_Adapter`. Folding them together made `is_available()`
-ambiguous (checking which plugin?) and forced a `null`-vs-empty hack to
-signal "Subscriptions isn't installed," instead of `integrations{}` simply
-omitting the `subscriptions` key the same way every other adapter's
-absence already works.
+separate from `Woocommerce_Adapter` — folding them together makes
+`is_available()` ambiguous (checking which plugin?) and forces a
+`null`-vs-empty hack to signal "Subscriptions isn't installed," instead of
+`integrations{}` simply omitting the `subscriptions` key the same way
+every other adapter's absence already works.
 
 ### Convention: every adapter splits into `metrics` + `configuration`
 

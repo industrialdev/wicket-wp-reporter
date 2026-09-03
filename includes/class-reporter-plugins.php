@@ -46,12 +46,10 @@ class Reporter_Plugins
                 'updateSource'    => $update_source,
                 'packageKind'     => self::package_kind_from_update_source($update_source),
                 // latestVersion/updateAvailable deliberately omitted, not
-                // set to null — M1 has no external version-lookup (see the
-                // plan's Out of scope section), so it genuinely doesn't
-                // know this state. A null value reads ambiguously close to
-                // "no update available" in naive client code (falsy check);
-                // omitting the key is an unambiguous "unknown here." M2
-                // adds these keys itself once it has real data.
+                // set to null — this plugin has no external version-lookup.
+                // A null value reads ambiguously close to "no update
+                // available" under a naive falsy check; omitting the key
+                // is unambiguous "unknown here."
             ];
         }
 

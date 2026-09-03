@@ -1,5 +1,4 @@
-/* T22: the API key field's layout, previously inline `style` attributes on
- * Reporter_Settings::render_api_key_field()'s markup. */
+/* API key field layout, rendered by Reporter_Settings::render_api_key_field(). */
 .wicket-reporter-api-key-row {
 	display: flex;
 	gap: 8px;

@@ -169,13 +169,9 @@ class Memberships_Adapter implements Reporter_Integration_Adapter
     }
 
     /**
-     * P2: counts memberships whose membership_status is one of the active
-     * statuses (and optionally whose membership_tier_uuid is in a given
-     * set) with a true SELECT COUNT(*) + correlated EXISTS — not
-     * WP_Query's found_posts, which forces SQL_CALC_FOUND_ROWS and
-     * materializes the entire result set of an unindexed postmeta
-     * meta_value scan. EXISTS keeps it a count, never a row materialization,
-     * and never double-counts a post that carries the meta key twice.
+     * A true SELECT COUNT(*) + correlated EXISTS, not WP_Query's
+     * found_posts — the latter forces SQL_CALC_FOUND_ROWS and materializes
+     * the whole result set for an unindexed postmeta scan.
      */
     private static function count_memberships(array $tier_uuids = []): int
     {
@@ -219,19 +215,11 @@ class Memberships_Adapter implements Reporter_Integration_Adapter
 
     /**
      * Combined per-config data — collect() splits this into the active
-     * count (metrics.active_by_config) and everything else
-     * (configuration.configs), keyed the same way so the two can be
-     * joined back together if needed. Every config appears here, even
-     * one with zero tiers/zero active memberships — total_configs already
-     * counts it, so silently omitting it would hide a real signal (a
-     * config nobody's assigned to a tier is itself worth seeing, not
-     * noise to drop). A membership links to its config through its tier,
-     * not directly — membership posts store `membership_tier_uuid`, and a
-     * tier's own `tier_data` serialized meta carries `config_id`. So this
-     * resolves tier -> config first (cheap: bounded by tier count,
-     * typically a handful per site), then runs one ids-only,
-     * found_posts-only WP_Query per config that has tiers, filtering
-     * memberships whose tier UUID falls in that config's set.
+     * count and everything else, keyed the same way. Every config appears
+     * even at zero tiers/active memberships, since omitting one would hide
+     * a real signal. A membership links to its config only through its
+     * tier (tier_data.config_id), never directly, so this resolves
+     * tier -> config first, then counts per config.
      *
      * @return array<int, array{
      *     config: string,
@@ -309,8 +297,8 @@ class Memberships_Adapter implements Reporter_Integration_Adapter
             self::$truncated = true;
         }
 
-        // M4: same N+1 fix as build_tier_info_map() — the loop below calls
-        // get_post() plus three get_post_meta() per config.
+        // Primes the cache up front — the loop below calls get_post() plus
+        // three get_post_meta() per config, which would otherwise be N+1.
         if ([] !== $config_ids) {
             _prime_post_caches($config_ids, false, true);
         }
@@ -432,24 +420,12 @@ class Memberships_Adapter implements Reporter_Integration_Adapter
     {
         $tier_ids = get_posts([
             'post_type'      => self::tier_post_type(),
-            // An explicit inclusion list, equal to what 'any' resolves to
-            // minus trash — every registered status except the ones flagged
-            // exclude_from_search (which is how WP_Query itself implements
-            // 'any': see WP_Query::get_posts(), it emits `!= 'x'` for each
-            // exclude_from_search status). 'trash' is already one of those,
-            // so excluding the whole exclude_from_search set covers trash
-            // without listing it separately. A trashed tier is not a real
-            // tier and its UUID should not feed the tier -> config map or
-            // the count_memberships() IN clause below.
-            //
-            // Verified against a live install rather than assumed: 'any'
-            // also excludes 'auto-draft' and every other exclude_from_search
-            // status on this site (WooCommerce's wc-* order statuses,
-            // Tribe's tribe-* statuses) — a plain
-            // array_diff(get_post_stati(), ['trash']) reintroduces all of
-            // those, which is wrong. The list below was checked to return
-            // the identical post set as 'any' on a mixed publish/draft/
-            // trash/auto-draft fixture.
+            // Mirrors what post_status => 'any' actually resolves to:
+            // every status except those flagged exclude_from_search (which
+            // already includes 'trash' and 'auto-draft'). A plain
+            // array_diff(get_post_stati(), ['trash']) would wrongly
+            // reintroduce auto-draft and other plugins' excluded statuses
+            // (e.g. WooCommerce's wc-* order statuses).
             'post_status'    => array_diff(get_post_stati(), get_post_stati(['exclude_from_search' => true])),
             'fields'         => 'ids',
             'posts_per_page' => self::MAX_TIERS_AND_CONFIGS,
@@ -459,9 +435,8 @@ class Memberships_Adapter implements Reporter_Integration_Adapter
             self::$truncated = true;
         }
 
-        // M4: get_posts(['fields' => 'ids']) skips post + meta priming, so
-        // the per-tier get_post_meta() below would be one query each (N+1).
-        // Prime them in one batch instead.
+        // get_posts(['fields' => 'ids']) skips meta priming, so batch it
+        // here rather than let the per-tier get_post_meta() below run N+1.
         if ([] !== $tier_ids) {
             _prime_post_caches($tier_ids, false, true);
         }
