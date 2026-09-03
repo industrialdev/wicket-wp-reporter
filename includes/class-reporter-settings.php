@@ -285,7 +285,8 @@ class Reporter_Settings
     // -------------------------------------------------------------------------
 
     /**
-     * Removes the stored API key hash and any transients on uninstall.
+     * Removes the stored API key hash and this plugin's own transients on
+     * uninstall.
      *
      * Not run on deactivate — deactivating and reactivating must not force
      * key regeneration. The enabled/environment-override fields live inside
@@ -295,27 +296,40 @@ class Reporter_Settings
      * unset from that array rather than deleted as top-level options; the
      * shared option itself is never deleted since other plugins' settings
      * live in it too.
+     *
+     * T21: previously a raw `$wpdb` DELETE against `wp_options` rows named
+     * `_transient_wicket_reporter_%`. That only reaches transients actually
+     * stored in the options table — a site running an object cache (Redis,
+     * Memcached) stores transients there instead, where this query can
+     * never see them, so the "cleanup" silently did nothing on that class of
+     * site. delete_transient() is object-cache-aware (it calls
+     * wp_cache_delete() when a persistent object cache is active, the
+     * options-table DELETE only when it isn't), so it works either way —
+     * but it needs an exact key, which only exists for this plugin's three
+     * fixed-name transients below. The rate-limit bucket transients
+     * (Reporter_Rest::check_rate_limit()) are deliberately left alone: their
+     * names are dynamic (one per API key/IP per 60-second window, with no
+     * enumerable list of past bucket names), and every one expires within
+     * 60 seconds regardless of whether uninstall ever runs, so there is
+     * nothing a cleanup step here would actually shorten.
      */
     public static function on_uninstall(): void
     {
         delete_option(WICKET_REPORTER_OPTION_API_KEY_HASH);
 
         $wicket_settings = get_option('wicket_settings', []);
-        unset($wicket_settings['wicket_reporter_enabled'], $wicket_settings['wicket_reporter_environment_override']);
-        update_option('wicket_settings', $wicket_settings);
 
-        global $wpdb;
-        $wpdb->query(
-            $wpdb->prepare(
-                "DELETE FROM {$wpdb->options} WHERE option_name LIKE %s",
-                $wpdb->esc_like('_transient_' . WICKET_REPORTER_TRANSIENT_PREFIX) . '%'
-            )
-        );
-        $wpdb->query(
-            $wpdb->prepare(
-                "DELETE FROM {$wpdb->options} WHERE option_name LIKE %s",
-                $wpdb->esc_like('_transient_timeout_' . WICKET_REPORTER_TRANSIENT_PREFIX) . '%'
-            )
-        );
+        // A malformed or foreign 'wicket_settings' value (anything but an
+        // array) must not be silently coerced or overwritten — leave it
+        // exactly as found rather than risk destroying another plugin's
+        // settings stored under the same shared option.
+        if (is_array($wicket_settings)) {
+            unset($wicket_settings['wicket_reporter_enabled'], $wicket_settings['wicket_reporter_environment_override']);
+            update_option('wicket_settings', $wicket_settings);
+        }
+
+        delete_transient(WICKET_REPORTER_TRANSIENT_PREFIX . 'status_response');
+        delete_transient(WICKET_REPORTER_TRANSIENT_PREFIX . 'status_response_stale');
+        delete_transient(WICKET_REPORTER_TRANSIENT_PREFIX . 'status_build_lock');
     }
 }
