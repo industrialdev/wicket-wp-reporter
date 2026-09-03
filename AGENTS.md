@@ -50,7 +50,6 @@ The API key field (`Reporter_Settings::render_api_key_field`) is a **custom-rend
 
 - Raw key: `wp_generate_password(48, false, false)` (~285 bits of entropy).
 - Stored: only its hash, via `Reporter_Settings::hash_token()` — `hash('sha256', $token)`, compared with `hash_equals()` (constant-time). Not `wp_hash_password()`/`wp_check_password()` (bcrypt) — a CSPRNG token this long has no offline brute-force threat, so the slow password KDF was pure overhead and an unthrottled CPU-amplification DoS vector on the public REST endpoint.
-- Legacy bcrypt/phpass hashes (any stored value that isn't 64 lowercase-hex chars, per `Reporter_Settings::is_legacy_key_hash()`) are rotated automatically on the next settings-tab render (`ensure_key_exists()`) and can no longer authenticate — the admin sees a one-time notice (`show_legacy_rotation_notice()`) prompting a Reset and re-registration with the fleet monitor.
 - Shown once: flashed via a 60-second, current-user-scoped transient, read and deleted in the same `admin_notices` request — a page refresh never shows the raw key twice. Afterward the field shows a masked placeholder, never the real value.
 - Regenerating immediately invalidates the previous key (single stored hash, no key history).
 
