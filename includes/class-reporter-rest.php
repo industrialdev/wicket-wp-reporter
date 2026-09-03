@@ -374,6 +374,17 @@ class Reporter_Rest
                 // integrations{}'s own key-absence rule: a site without
                 // that integration doesn't list it here either.
                 'capabilities' => array_merge(['wordpress', 'plugins', 'themes', 'composer'], array_keys($integrations)),
+                // T23: an adapter that is_available() but whose collect()
+                // threw is absent from both `capabilities` above and
+                // `integrations{}` below — identical, from the response
+                // alone, to that adapter never having been installed.
+                // collectorErrors[] already carries the failure, but only
+                // monitor{} is a place a caller checks before deciding
+                // what a missing key means. Keyed by adapter slug (matches
+                // integrations.<slug> in collectorErrors[]) so a caller can
+                // tell which specific capability is unreliable, not just
+                // that something is.
+                'degradedCapabilities' => array_keys($integrations_result['errors'] ?? []),
                 'generationMs' => null, // filled in below, after Reporter_Timer::finish_request()
             ],
             'site'      => Reporter_Timer::time('site', static fn () => self::get_site_info()),
