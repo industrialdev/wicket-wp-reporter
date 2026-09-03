@@ -51,6 +51,12 @@ class Reporter_Rest
             'methods'             => 'GET',
             'callback'            => [__CLASS__, 'handle_status'],
             'permission_callback' => [__CLASS__, 'check_permission'],
+            // T19: excludes this route from the public, unauthenticated
+            // `GET /wp-json` index, which otherwise advertises its
+            // existence (namespace, path, methods) to anyone. The route
+            // itself still requires the bearer token regardless — this
+            // only stops it from being discoverable without one.
+            'show_in_index'       => false,
         ]);
 
         // M1: bearer auth never establishes a WP user, so WP's default
