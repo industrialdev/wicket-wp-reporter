@@ -158,12 +158,9 @@ class Reporter_Settings
     public static function render_api_key_field($impl): string
     {
         $has_key = (bool) get_option(WICKET_REPORTER_OPTION_API_KEY_HASH, '');
-        $label = esc_html__('API Key', 'wicket-reporter');
         $masked_value = $has_key
-            ? esc_html__('••••••••••••••••••••••••••••••• (hidden — reset to view)', 'wicket-reporter')
-            : esc_html__('No key set', 'wicket-reporter');
-        $description = esc_html__('Add this site to the fleet monitor\'s registry using this key. The raw value is shown once, right after Reset, and is not stored or retrievable afterward.', 'wicket-reporter');
-        $reset_label = esc_html__('Reset', 'wicket-reporter');
+            ? __('••••••••••••••••••••••••••••••• (hidden — reset to view)', 'wicket-reporter')
+            : __('No key set', 'wicket-reporter');
 
         $reset_url = wp_nonce_url(
             add_query_arg(
@@ -182,22 +179,55 @@ class Reporter_Settings
             'wicket_reporter_reset_key'
         );
 
+        // T22: every value below is escaped at the point of output (echo),
+        // not pre-escaped into a variable earlier — a variable holding an
+        // already-escaped string gives no defense-in-depth if a later edit
+        // adds unescaped content to it before the echo. The style attributes
+        // this markup used to carry inline now live in
+        // assets/css/admin-settings.css, enqueued only on this settings
+        // screen (see maybe_enqueue_admin_assets()).
         ob_start();
         ?>
         <tr valign="top">
-            <th scope="row" class="titledesc"><?php echo $label; ?></th>
+            <th scope="row" class="titledesc"><?php echo esc_html__('API Key', 'wicket-reporter'); ?></th>
             <td class="forminp forminp-text">
-                <div style="display: flex; gap: 8px; align-items: center; max-width: 480px;">
-                    <input type="text" readonly value="<?php echo $masked_value; ?>" style="flex: 1;">
+                <div class="wicket-reporter-api-key-row">
+                    <input type="text" readonly value="<?php echo esc_attr($masked_value); ?>">
                     <a href="<?php echo esc_url($reset_url); ?>" class="button button-secondary" onclick="return confirm('<?php echo esc_js(__('Generate a new key? The old key stops working immediately.', 'wicket-reporter')); ?>');">
-                        <?php echo $reset_label; ?>
+                        <?php echo esc_html__('Reset', 'wicket-reporter'); ?>
                     </a>
                 </div>
-                <p class="description"><?php echo $description; ?></p>
+                <p class="description"><?php echo esc_html__('Add this site to the fleet monitor\'s registry using this key. The raw value is shown once, right after Reset, and is not stored or retrievable afterward.', 'wicket-reporter'); ?></p>
             </td>
         </tr>
         <?php
         return (string) ob_get_clean();
+    }
+
+    /**
+     * Enqueues this plugin's admin stylesheet, but only on the Wicket
+     * settings screen where render_api_key_field() actually renders — no
+     * global admin-wide asset for a handful of layout rules used on one
+     * screen.
+     *
+     * The Wicket settings page is a top-level menu whose own submenu slug
+     * equals its parent's ('wicket-settings' registered as both, see
+     * WPSettings::add_to_menu()) — WordPress special-cases that as the
+     * parent's own click target, giving it the top-level hook suffix rather
+     * than the usual '<parent>_page_<child>' pattern.
+     */
+    public static function maybe_enqueue_admin_assets(string $hook_suffix): void
+    {
+        if ('toplevel_page_wicket-settings' !== $hook_suffix) {
+            return;
+        }
+
+        wp_enqueue_style(
+            'wicket-reporter-admin-settings',
+            WICKET_REPORTER_PLUGIN_URL . 'assets/css/admin-settings.css',
+            [],
+            WICKET_REPORTER_VERSION
+        );
     }
 
     /**

@@ -44,6 +44,10 @@ add_action('rest_api_init', ['Reporter_Rest', 'register_routes']);
 add_filter('wicket_settings_tabs', ['Reporter_Settings', 'extend_settings_tabs'], 20);
 add_filter('wicket_settings_tab_int', ['Reporter_Settings', 'extend_settings_tab_fallback'], 20);
 
+// T22: this plugin's settings-screen stylesheet, replacing the inline
+// style attributes render_api_key_field() used to carry.
+add_action('admin_enqueue_scripts', ['Reporter_Settings', 'maybe_enqueue_admin_assets']);
+
 // Reset API Key link (see render_api_key_field) — a plain GET, handled
 // before the tab renders so maybe_handle_reset can flash the new raw key
 // via a short-lived transient (see admin_notices hook below).
