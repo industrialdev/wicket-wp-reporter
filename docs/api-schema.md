@@ -5,6 +5,66 @@ documentation, not a runtime schema — there is no validation code behind
 any of this, matching the plugin's lightweight-only principle. Full design
 context: [wicket-atlas's feature-fleet-health-monitor.md](https://github.com/industrialdev/wicket-atlas/blob/main/plans/feature-fleet-health-monitor.md).
 
+## Operational contract
+
+What a caller (the fleet monitor, or anyone else with a valid key) can rely
+on about auth, caching, and error responses — as opposed to the response
+body's field shapes, covered below.
+
+### Authentication
+
+Header-only Bearer token (RFC 6750): `Authorization: Bearer <api_key>`.
+Never accepted via query string, cookie, or request body — see
+`Reporter_Rest::get_bearer_token()`. The key itself is generated and shown
+once in the plugin's own settings screen (Wicket → Integrations → Wicket
+Reporter); only its SHA-256 hash is ever stored.
+
+### Caching
+
+Responses are cached in a transient for **8 hours** (`CACHE_TTL_SECONDS`),
+matching the stack-wide fleet-health caching policy — TTL-only
+invalidation, no early-bust hooks on plugin/theme/core changes. A repeat
+request inside that window returns the cached body without re-running any
+collector.
+
+A second, longer-lived copy of the same body is kept for **48 hours**
+(`STALE_CACHE_KEY`) specifically to serve concurrent-build lock contention
+(see 503 below) — this is not a second cache tier a normal caller ever
+requests directly.
+
+### HTTP status codes
+
+| Status | Meaning | Body |
+|---|---|---|
+| `200` | Success. May carry partial data plus a non-empty `collectorErrors[]` — a 200 does not mean every section is complete. | The status response. |
+| `401` | Missing or invalid API key. | `WP_Error`-shaped: `{code: "wicket_reporter_unauthorized", ...}` |
+| `403` | The reporter is disabled via its settings-screen toggle. The endpoint reveals nothing about whether a key would otherwise be valid — this check runs before the API key is read. | `{code: "wicket_reporter_disabled", ...}` |
+| `429` | Rate limit exceeded — either the per-key bucket (120 requests / 60s) or the independent per-IP bucket (240 requests / 60s, a burst guard keyed on `REMOTE_ADDR` only). No `Retry-After` header today; the fixed 60-second window (see Caching above) is the only signal for how long to back off. | `{code: "wicket_reporter_rate_limited", ...}` |
+| `503` | `wicket-wp-base-plugin` is unavailable (`wicket_reporter_unavailable`), **or** the cache is cold, a build is already in progress, and no stale copy exists to fall back on. | `{code: "wicket_reporter_unavailable", ...}` for the first case (no `Retry-After`); `{error: "status_generation_in_progress"}` for the second, **with** a `Retry-After: 5` header. |
+
+**Note on the package doc**: `packages/wicket-wp-reporter.md` in Atlas
+previously stated the disabled case returns 404. It never has — 403 is the
+correct, current, and only-ever behavior for a disabled site (T25).
+
+### `Retry-After`
+
+Sent today only on the build-in-progress `503` (`Retry-After: 5`) — not on
+`429`, and not on the `wicket_reporter_unavailable` `503` (base-plugin
+missing isn't a transient condition a short retry would resolve). A `429`
+caller currently has to fall back on the known fixed 60-second window
+(see Caching above) to decide when to retry.
+
+### Stale-while-revalidate (`X-Wicket-Reporter-Stale`)
+
+When a request finds the cache cold and a build already in progress (the
+30-second build lock), it serves the 48-hour stale copy instead of a bare
+503, with header `X-Wicket-Reporter-Stale: 1` and the stale copy's own
+original `cache.generatedAt` value still in the body — a caller can always
+tell how old the data actually is by reading that field, regardless of
+which cache tier served it. Only sent when a stale copy exists; genuinely
+first-ever build (or a stale copy that itself expired after 48 hours with
+no successful rebuild) still returns the bare 503 above.
+
 ## Top-level response shape
 
 `composer`, `plugins`, and `themes` are each `{ _meta: {...}, items: [...] }`
