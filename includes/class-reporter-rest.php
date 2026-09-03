@@ -120,10 +120,7 @@ class Reporter_Rest
         // a CPU-amplification DoS vector on this unauthenticated endpoint
         // (any caller sending 'Authorization: Bearer x' forced a bcrypt
         // verify, unthrottled, since the rate limit runs only after auth).
-        // Store and compare a fast SHA-256 with hash_equals() (constant-
-        // time). A legacy bcrypt/phpass hash has a different length and
-        // simply fails this compare; it is rotated on the next settings-tab
-        // render (Reporter_Settings::ensure_key_exists).
+        // Store and compare a fast SHA-256 with hash_equals() (constant-time).
         if ('' === $token || '' === $stored_hash || !hash_equals(Reporter_Settings::hash_token($token), $stored_hash)) {
             Reporter_Log::warning('REST request rejected: missing or invalid API key');
 
