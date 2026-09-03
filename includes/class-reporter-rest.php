@@ -65,25 +65,36 @@ class Reporter_Rest
         // commit references) ships with no Cache-Control and can be cached
         // by an intermediary or misconfigured edge and served to an
         // unauthenticated requester. Scope the nocache gate to this route.
-        add_filter('rest_send_nocache_headers', [__CLASS__, 'force_nocache_for_status']);
+        //
+        // T20: rest_send_nocache_headers doesn't receive $request, so the
+        // route can't be resolved there directly (the original code fell
+        // back to sniffing REQUEST_URI, which is brittle against rewrite
+        // rules and the ?rest_route= query-var form). rest_request_after_
+        // callbacks runs earlier in the same dispatch with the real
+        // WP_REST_Request, and only for a request that actually matched a
+        // route — check the resolved route there, and add the nocache
+        // filter only when it is this one, instead of registering it
+        // unconditionally for every REST request regardless of route.
+        add_filter('rest_request_after_callbacks', [__CLASS__, 'maybe_force_nocache_for_status'], 10, 3);
     }
 
     /**
-     * Forces WP's REST nocache headers, but only for this plugin's route —
-     * leaving every other REST endpoint's caching policy untouched.
+     * Adds the nocache-forcing filter only once this request has been
+     * dispatched to this plugin's own route — every other REST request
+     * (the large majority) never registers it at all.
+     *
+     * @param mixed            $response
+     * @param array            $handler
+     * @param WP_REST_Request  $request
+     * @return mixed Unchanged — this is an observer, not a response filter.
      */
-    public static function force_nocache_for_status(bool $nocache): bool
+    public static function maybe_force_nocache_for_status($response, array $handler, WP_REST_Request $request)
     {
-        $uri = isset($_SERVER['REQUEST_URI']) ? (string) $_SERVER['REQUEST_URI'] : '';
-
-        if (
-            false !== strpos($uri, '/wicket-reporter/v1/')
-            || false !== strpos($uri, 'rest_route=/wicket-reporter/v1/')
-        ) {
-            return true;
+        if ('/' . self::NAMESPACE . self::ROUTE === $request->get_route()) {
+            add_filter('rest_send_nocache_headers', '__return_true');
         }
 
-        return $nocache;
+        return $response;
     }
 
     /**
