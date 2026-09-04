@@ -79,10 +79,11 @@ class Reporter_Plugins
 
         foreach (wp_get_themes() as $stylesheet => $theme) {
             $match = $by_directory[$stylesheet] ?? null;
+            $is_child_theme = $theme->get_template() !== $stylesheet;
 
             $update_source = null !== $match
                 ? $match['updateSource']
-                : self::detect_manual_update_source($stylesheet, true);
+                : self::detect_manual_theme_update_source($stylesheet, $is_child_theme);
 
             $is_active = $stylesheet === $active_stylesheet || $stylesheet === $active_template;
 
@@ -201,5 +202,15 @@ class Reporter_Plugins
     private static function detect_manual_update_source(string $slug, bool $is_theme = false): string
     {
         return 'wordpress' === self::detect_manual_install_type($slug, $is_theme) ? 'wordpress-org' : 'unknown';
+    }
+
+    /** Themes only — a child theme has no independent update channel by design, distinct from a genuinely unclassified `unknown`. */
+    private static function detect_manual_theme_update_source(string $slug, bool $is_child_theme): string
+    {
+        if ($is_child_theme) {
+            return 'child-theme';
+        }
+
+        return self::detect_manual_update_source($slug, true);
     }
 }

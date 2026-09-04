@@ -99,17 +99,20 @@ minimums per release) independently of the WP version check itself.
 |---|---|---|
 | `plugins/themes .items[].status` | `active`, `inactive` | Whether WordPress currently has it active. |
 | `plugins/themes .items[].installType` | `composer`, `wordpress`, `manual` | `composer` = matched a `composer.lock` entry by directory name. `wordpress` = no composer match, but a wordpress.org-style `readme.txt` header found. `manual` = neither. |
-| `plugins/themes .items[].updateSource` | `git`, `satispress`, `wordpress-org`, `unknown` | Where the fleet-monitor dashboard checks for a newer version. `git` = Wicket-authored (`wicket/*`/`industrialdev/*` composer namespace, or a git source resolving to the `industrialdev` GitHub org). `satispress` = licensed package (`wicketpress/*`). `wordpress-org` = public wordpress.org directory (`wp-plugin/*` or `wpackagist-plugin/*`/`wpackagist-theme/*` — both proxy the same source). `unknown` = no match. |
-| `plugins/themes .items[].packageKind` | `installable`, `composer-package` | `installable` = a real WP plugin/theme with an actual update channel (wordpress.org, SatisPress, or unknown). `composer-package` = `updateSource` is `git` — a Wicket-authored composer dependency with no plugin-style update channel of its own, even though WordPress still sees it as an installed plugin/theme. Lets a consumer (e.g. the fleet dashboard) separate "real plugins" from "composer-only packages that happen to live in wp-content/plugins" without re-deriving this from `updateSource` itself. |
+| `plugins/themes .items[].updateSource` | `git`, `satispress`, `wordpress-org`, `child-theme`, `unknown` | Where the fleet-monitor dashboard checks for a newer version. `git` = Wicket-authored (`wicket/*`/`industrialdev/*` composer namespace, or a git source resolving to the `industrialdev` GitHub org). `satispress` = licensed package (`wicketpress/*`). `wordpress-org` = public wordpress.org directory (`wp-plugin/*` or `wpackagist-plugin/*`/`wpackagist-theme/*` — both proxy the same source). `child-theme` = themes only; no composer match, and `WP_Theme::get_template()` names a different stylesheet than its own — a real, structurally-detected child theme with no independent update channel by design, not merely unclassified. `unknown` = no match and no other signal. |
+| `plugins/themes .items[].packageKind` | `installable`, `composer-package` | `installable` = a real WP plugin/theme with an actual update channel (wordpress.org, SatisPress, child-theme, or unknown). `composer-package` = `updateSource` is `git` — a Wicket-authored composer dependency with no plugin-style update channel of its own, even though WordPress still sees it as an installed plugin/theme. Lets a consumer (e.g. the fleet dashboard) separate "real plugins" from "composer-only packages that happen to live in wp-content/plugins" without re-deriving this from `updateSource` itself. |
 
-**Known limitation**: a theme that's Wicket-authored but not
-composer-managed (e.g. `wicket-wp-theme`, `wicket-child` — installed
-directly in `web/app/themes/`, no matching `composer.lock` entry) reports
+**Known limitation**: a *parent* theme that's Wicket-authored but not
+composer-managed (e.g. `wicket-wp-theme` installed directly in
+`web/app/themes/`, no matching `composer.lock` entry) still reports
 `installType: manual`/`updateSource: unknown`, even though it genuinely is
-a Wicket git repo. `git`-detection currently only runs off a composer
-package's namespace (`is_wicket_git_package()`); there's no fallback
-detection path for a non-composer-managed Wicket theme yet. Not a bug —
-just a real gap in current coverage.
+a Wicket git repo. `git`-detection only runs off a composer package's
+namespace (`is_wicket_git_package()`); there's no fallback detection path
+for a non-composer-managed Wicket *parent* theme. A *child* theme in the
+same situation (e.g. `wicket-child`) is covered — see `child-theme` above —
+since it has its own structural signal (the `Template:` header) that a
+parent theme doesn't. Not a bug for the parent case — just a real gap in
+current coverage.
 | `composer.items[].type` | `wordpress-plugin`, `wordpress-theme`, `wordpress-muplugin`, `wordpress-core` | The only composer package types this plugin reports. |
 | `site.environment` | `production`, `staging`, `development`, `sandbox` | From `wp_get_environment_type()` unless the settings override is set. |
 | `collectorErrors[].collector` | `composer`, `plugins`, `themes`, `integrations`, `integrations.memberships`, `integrations.woocommerce`, `integrations.subscriptions`, `wordpress`, `site` | `composer`/`plugins`/`themes`/`wordpress`/`site` match a top-level collector throwing. `integrations` matches the whole adapter registry failing to load (rare — e.g. a fatal in `Reporter_Integrations::collect()` itself). `integrations.<slug>` matches one specific adapter throwing — every other adapter's data still returns, per the per-adapter isolation in `Reporter_Integrations::collect()`. |
