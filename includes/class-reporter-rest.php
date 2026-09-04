@@ -217,16 +217,27 @@ class Reporter_Rest
         return null;
     }
 
+    /** Forces a fresh build past the cache — a header, never a query param, same reasoning as the bearer token itself. Requires check_permission() to have already authenticated the request. */
+    private const FORCE_REFRESH_HEADER = 'X-Wicket-Reporter-Force-Refresh';
+
     /**
-     * Serves the cached response if present, else builds and caches it —
-     * so a repeat request skips every collector entirely.
+     * Serves the cached response if present, else builds and caches it. An
+     * already-authenticated caller can force past the cache with the header
+     * above — TTL-only invalidation otherwise gives the monitor's "Refresh"
+     * action no way to mean "recompute now." Skips the plain cache reads,
+     * not the build lock itself: forced-refresh calls still coalesce onto
+     * one in-flight build.
      */
     public static function handle_status(WP_REST_Request $request): WP_REST_Response
     {
-        $cached = get_transient(self::CACHE_KEY);
+        $force_refresh = '' !== trim((string) $request->get_header(self::FORCE_REFRESH_HEADER));
 
-        if (false !== $cached && is_array($cached)) {
-            return new WP_REST_Response($cached, 200);
+        if (!$force_refresh) {
+            $cached = get_transient(self::CACHE_KEY);
+
+            if (false !== $cached && is_array($cached)) {
+                return new WP_REST_Response($cached, 200);
+            }
         }
 
         // Coalesces concurrent cache-miss builds with a short lock — without
@@ -257,12 +268,15 @@ class Reporter_Rest
         set_transient($lock_key, 1, 30);
 
         try {
-            // Re-check after winning the lock: another request may have
-            // just finished building while this one was queued.
-            $cached = get_transient(self::CACHE_KEY);
+            // Re-check after winning the lock — another request may have
+            // just finished building. Skipped under a forced refresh, same
+            // reason as the top-level check.
+            if (!$force_refresh) {
+                $cached = get_transient(self::CACHE_KEY);
 
-            if (false !== $cached && is_array($cached)) {
-                return new WP_REST_Response($cached, 200);
+                if (false !== $cached && is_array($cached)) {
+                    return new WP_REST_Response($cached, 200);
+                }
             }
 
             $body = self::build_status_body();

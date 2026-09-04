@@ -22,15 +22,21 @@ Reporter); only its SHA-256 hash is ever stored.
 ### Caching
 
 Responses are cached in a transient for **8 hours** (`CACHE_TTL_SECONDS`),
-matching the stack-wide fleet-health caching policy — TTL-only
-invalidation, no early-bust hooks on plugin/theme/core changes. A repeat
-request inside that window returns the cached body without re-running any
+matching the stack-wide fleet-health caching policy. A repeat request
+inside that window returns the cached body without re-running any
 collector.
 
 A second, longer-lived copy of the same body is kept for **48 hours**
 (`STALE_CACHE_KEY`) specifically to serve concurrent-build lock contention
 (see 503 below) — this is not a second cache tier a normal caller ever
 requests directly.
+
+**Force-refresh bypass**: send `X-Wicket-Reporter-Force-Refresh: 1` to force
+a fresh build past the 8h cache — a header, never a query param, same
+reasoning as the bearer token. Requires a valid bearer token like any other
+request; still counts against the normal rate limit. A forced refresh
+queued behind another in-flight build coalesces onto that build's lock
+rather than starting a second one.
 
 ### HTTP status codes
 
