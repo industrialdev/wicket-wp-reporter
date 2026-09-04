@@ -25,6 +25,22 @@ class Memberships_Adapter implements Reporter_Integration_Adapter
      */
     private const ACTIVE_STATUSES = ['active', 'grace_period', 'delayed'];
 
+    /**
+     * Ceiling on the tier and config enumerations in build_tier_info_map()
+     * and build_config_data(). Both previously ran posts_per_page => -1,
+     * which contradicts this plugin's own cheap-counts-only rule: a site
+     * with an unbounded number of tiers (an importer bug, a migration, one
+     * tier per organisation) would run an unbounded fetch plus a full meta
+     * prime inside a request that already holds a 30-second build lock. 500
+     * is far above any real site's tier/config count today; hitting it is
+     * itself a signal something is wrong, which is why it is surfaced in
+     * metrics rather than silently capped.
+     */
+    private const MAX_TIERS_AND_CONFIGS = 500;
+
+    /** @var bool Set when a bounded query below hit MAX_TIERS_AND_CONFIGS. Read by collect() to surface it. */
+    private static bool $truncated = false;
+
     public function slug(): string
     {
         return 'memberships';
@@ -62,7 +78,8 @@ class Memberships_Adapter implements Reporter_Integration_Adapter
      *         total_active_memberships: int,
      *         total_tiers: int,
      *         total_configs: int,
-     *         active_by_config: array<int, array{config: string, active: int}>
+     *         active_by_config: array<int, array{config: string, active: int}>,
+     *         tiersOrConfigsTruncated: bool
      *     },
      *     configuration: array{
      *         configs: array<int, array{
@@ -84,6 +101,8 @@ class Memberships_Adapter implements Reporter_Integration_Adapter
      */
     public function collect(): array
     {
+        self::$truncated = false;
+
         $total_memberships = self::count_posts(self::membership_post_type());
         $total_active_memberships = self::count_active_memberships();
         $total_tiers = self::count_posts(self::tier_post_type());
@@ -104,6 +123,11 @@ class Memberships_Adapter implements Reporter_Integration_Adapter
                     static fn (array $config) => ['config' => $config['config'], 'active' => $config['active']],
                     $configs
                 ),
+                // True only when the tier or config enumeration hit
+                // MAX_TIERS_AND_CONFIGS — everything above is then a partial
+                // view, not the whole site. Absent no-op case stays false;
+                // this is not a silent cap.
+                'tiersOrConfigsTruncated'  => self::$truncated,
             ],
             'configuration' => [
                 'configs' => array_map(
@@ -123,34 +147,31 @@ class Memberships_Adapter implements Reporter_Integration_Adapter
     }
 
     /**
-     * wp_count_posts() is core's own count API — one query. M6: sum every
-     * status except trash and auto-draft so totals match what an admin sees
-     * in the list table, not a figure padded with deleted or junk rows.
+     * Every status a real membership, tier, or config post can be in while
+     * it still counts toward a total. An explicit allowlist, not a denylist
+     * that grows an exception per unwanted status as they turn up — a
+     * denylist of ['trash', 'auto-draft'] previously let 'draft' through,
+     * so a membership that was never published counted toward
+     * total_memberships alongside genuinely active ones.
      */
+    private const COUNTABLE_STATUSES = ['publish', 'private', 'pending', 'future'];
+
     private static function count_posts(string $post_type): int
     {
-        $counts = wp_count_posts($post_type);
+        $counts = Reporter_Post_Status_Counts::for_post_type($post_type);
         $total = 0;
 
-        foreach ((array) $counts as $status => $n) {
-            if (in_array($status, ['trash', 'auto-draft'], true)) {
-                continue;
-            }
-
-            $total += (int) $n;
+        foreach (self::COUNTABLE_STATUSES as $status) {
+            $total += $counts[$status] ?? 0;
         }
 
         return $total;
     }
 
     /**
-     * P2: counts memberships whose membership_status is one of the active
-     * statuses (and optionally whose membership_tier_uuid is in a given
-     * set) with a true SELECT COUNT(*) + correlated EXISTS — not
-     * WP_Query's found_posts, which forces SQL_CALC_FOUND_ROWS and
-     * materializes the entire result set of an unindexed postmeta
-     * meta_value scan. EXISTS keeps it a count, never a row materialization,
-     * and never double-counts a post that carries the meta key twice.
+     * A true SELECT COUNT(*) + correlated EXISTS, not WP_Query's
+     * found_posts — the latter forces SQL_CALC_FOUND_ROWS and materializes
+     * the whole result set for an unindexed postmeta scan.
      */
     private static function count_memberships(array $tier_uuids = []): int
     {
@@ -194,19 +215,11 @@ class Memberships_Adapter implements Reporter_Integration_Adapter
 
     /**
      * Combined per-config data — collect() splits this into the active
-     * count (metrics.active_by_config) and everything else
-     * (configuration.configs), keyed the same way so the two can be
-     * joined back together if needed. Every config appears here, even
-     * one with zero tiers/zero active memberships — total_configs already
-     * counts it, so silently omitting it would hide a real signal (a
-     * config nobody's assigned to a tier is itself worth seeing, not
-     * noise to drop). A membership links to its config through its tier,
-     * not directly — membership posts store `membership_tier_uuid`, and a
-     * tier's own `tier_data` serialized meta carries `config_id`. So this
-     * resolves tier -> config first (cheap: bounded by tier count,
-     * typically a handful per site), then runs one ids-only,
-     * found_posts-only WP_Query per config that has tiers, filtering
-     * memberships whose tier UUID falls in that config's set.
+     * count and everything else, keyed the same way. Every config appears
+     * even at zero tiers/active memberships, since omitting one would hide
+     * a real signal. A membership links to its config only through its
+     * tier (tier_data.config_id), never directly, so this resolves
+     * tier -> config first, then counts per config.
      *
      * @return array<int, array{
      *     config: string,
@@ -275,13 +288,17 @@ class Memberships_Adapter implements Reporter_Integration_Adapter
 
         $config_ids = get_posts([
             'post_type'      => self::config_post_type(),
-            'post_status'    => 'any',
+            'post_status'    => array_diff(get_post_stati(), get_post_stati(['exclude_from_search' => true])),
             'fields'         => 'ids',
-            'posts_per_page' => -1,
+            'posts_per_page' => self::MAX_TIERS_AND_CONFIGS,
         ]);
 
-        // M4: same N+1 fix as build_tier_info_map() — the loop below calls
-        // get_post() plus three get_post_meta() per config.
+        if (count($config_ids) >= self::MAX_TIERS_AND_CONFIGS) {
+            self::$truncated = true;
+        }
+
+        // Primes the cache up front — the loop below calls get_post() plus
+        // three get_post_meta() per config, which would otherwise be N+1.
         if ([] !== $config_ids) {
             _prime_post_caches($config_ids, false, true);
         }
@@ -403,14 +420,23 @@ class Memberships_Adapter implements Reporter_Integration_Adapter
     {
         $tier_ids = get_posts([
             'post_type'      => self::tier_post_type(),
-            'post_status'    => 'any',
+            // Mirrors what post_status => 'any' actually resolves to:
+            // every status except those flagged exclude_from_search (which
+            // already includes 'trash' and 'auto-draft'). A plain
+            // array_diff(get_post_stati(), ['trash']) would wrongly
+            // reintroduce auto-draft and other plugins' excluded statuses
+            // (e.g. WooCommerce's wc-* order statuses).
+            'post_status'    => array_diff(get_post_stati(), get_post_stati(['exclude_from_search' => true])),
             'fields'         => 'ids',
-            'posts_per_page' => -1,
+            'posts_per_page' => self::MAX_TIERS_AND_CONFIGS,
         ]);
 
-        // M4: get_posts(['fields' => 'ids']) skips post + meta priming, so
-        // the per-tier get_post_meta() below would be one query each (N+1).
-        // Prime them in one batch instead.
+        if (count($tier_ids) >= self::MAX_TIERS_AND_CONFIGS) {
+            self::$truncated = true;
+        }
+
+        // get_posts(['fields' => 'ids']) skips meta priming, so batch it
+        // here rather than let the per-tier get_post_meta() below run N+1.
         if ([] !== $tier_ids) {
             _prime_post_caches($tier_ids, false, true);
         }

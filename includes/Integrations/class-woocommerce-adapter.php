@@ -68,7 +68,11 @@ class Woocommerce_Adapter implements Reporter_Integration_Adapter
         $counts = [];
 
         foreach (array_keys(wc_get_order_statuses()) as $status) {
-            $unprefixed = str_replace('wc-', '', $status);
+            // Anchored to the start: str_replace('wc-', '', $status) strips
+            // the substring anywhere, so a custom status containing "wc-"
+            // mid-string (e.g. "wc-awaiting-wc-review") would be mangled
+            // and mis-keyed instead of just having its leading prefix cut.
+            $unprefixed = preg_replace('/^wc-/', '', $status);
             $counts[$unprefixed] = wc_orders_count($unprefixed);
         }
 
@@ -89,10 +93,8 @@ class Woocommerce_Adapter implements Reporter_Integration_Adapter
      */
     private static function count_users_by_role(): array
     {
-        // P1: count_users() is CPU-intensive (one COUNT column per role over
-        // every wp_capabilities usermeta row). It is already computed once
-        // per request by Reporter_Rest::user_counts() for the wordpress{}
-        // section; reuse that memo rather than running it a second time.
+        // count_users() is CPU-intensive; reuse Reporter_Rest's per-request
+        // memo rather than running it again for this section.
         $counts = Reporter_Rest::user_counts();
 
         return [
@@ -104,8 +106,6 @@ class Woocommerce_Adapter implements Reporter_Integration_Adapter
     /** wp_count_posts() is core's own cheap-count API — one query, no per-row iteration. */
     private static function count_posts_by_status(string $post_type, string $status): int
     {
-        $counts = wp_count_posts($post_type);
-
-        return (int) ($counts->{$status} ?? 0);
+        return Reporter_Post_Status_Counts::for_post_type($post_type)[$status] ?? 0;
     }
 }

@@ -153,28 +153,20 @@ class VersionBumper
                 $updated = $count > 0;
                 break;
             case 'php':
-                $newContent = $content;
-                $versionPatternPart = '[0-9a-zA-Z\\.-]+';
-
-                $docblockPattern = '/(^\s*\*\s*Version:\s*)' . $versionPatternPart . '/m';
-                $tempContent = preg_replace($docblockPattern, '${1}' . $newVersion, $content, -1, $count1);
-
-                if ($count1 > 0) {
-                    $newContent = $tempContent;
-                    $updated = true;
-                } else {
-                    $plainHeaderPattern = '/(Version:\s*)' . $versionPatternPart . '/i';
-                    $tempContent = preg_replace($plainHeaderPattern, '${1}' . $newVersion, $content, -1, $count2);
-                    if ($count2 > 0) {
-                        $newContent = $tempContent;
-                        $updated = true;
-                    }
-                }
+                // Replace exactly one header line, and only one whose value is
+                // the current version. An unanchored global replace rewrites
+                // every "Version:" docblock line in the file, including
+                // unrelated ones such as an @since-style annotation or a
+                // vendored header.
+                $currentQuoted = preg_quote($this->currentVersion, '/');
+                $docblockPattern = '/(^[ \t]*\*[ \t]*Version:[ \t]*)' . $currentQuoted . '$/m';
+                $newContent = preg_replace($docblockPattern, '${1}' . $newVersion, $content, 1, $count);
+                $updated = $count > 0;
                 break;
             default:
-                $pattern = '/' . preg_quote($this->currentVersion, '/') . '/';
-                $newContent = preg_replace($pattern, $newVersion, $content, -1, $count);
-                $updated = $count > 0;
+                fwrite(STDERR, "Error: unsupported file type '{$extension}' for {$filePath}; refusing to guess.\n");
+
+                return false;
         }
 
         if ($newContent === null) {
@@ -215,9 +207,11 @@ class VersionBumper
         fwrite(STDERR, "New version: {$newVersion}\n");
 
         $successCount = 0;
+        $modifiedFiles = [];
         foreach ($this->filesToUpdate as $file) {
             if ($this->updateVersionInFile($file, $newVersion)) {
                 fwrite(STDERR, "Updated version in {$file}\n");
+                $modifiedFiles[] = $file;
                 $successCount++;
             }
         }
@@ -228,12 +222,26 @@ class VersionBumper
         }
 
         if ($successCount !== count($this->filesToUpdate)) {
-            fwrite(STDERR, "{$successCount} out of " . count($this->filesToUpdate) . " files were updated\n");
+            // A partial update (e.g. composer.json updated but the plugin
+            // header's docblock pattern missed) must not exit 0 — release.yml
+            // stages exactly the reported files, then commits, tags, and
+            // pushes on this exit code, so a silent partial failure ships a
+            // release where the plugin header and composer.json permanently
+            // disagree on version.
+            fwrite(STDERR, "Error: {$successCount} out of " . count($this->filesToUpdate) . " files were updated\n");
+            exit(1);
         }
 
         fwrite(STDERR, "Version bump completed: {$this->currentVersion} -> {$newVersion}\n");
 
-        // Machine-readable result on STDOUT (last line) for CI capture.
+        // Machine-readable output on STDOUT for CI capture. The files this run
+        // actually modified come first, one per line, so the release workflow can
+        // stage exactly those paths instead of globbing. The version stays the
+        // LAST line, which is the existing contract (callers use `| tail -1`).
+        foreach ($modifiedFiles as $file) {
+            echo 'file: ' . $file . "\n";
+        }
+
         echo $newVersion . "\n";
     }
 }

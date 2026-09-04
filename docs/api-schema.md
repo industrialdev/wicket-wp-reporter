@@ -5,6 +5,72 @@ documentation, not a runtime schema — there is no validation code behind
 any of this, matching the plugin's lightweight-only principle. Full design
 context: [wicket-atlas's feature-fleet-health-monitor.md](https://github.com/industrialdev/wicket-atlas/blob/main/plans/feature-fleet-health-monitor.md).
 
+## Operational contract
+
+What a caller (the fleet monitor, or anyone else with a valid key) can rely
+on about auth, caching, and error responses — as opposed to the response
+body's field shapes, covered below.
+
+### Authentication
+
+Header-only Bearer token (RFC 6750): `Authorization: Bearer <api_key>`.
+Never accepted via query string, cookie, or request body — see
+`Reporter_Rest::get_bearer_token()`. The key itself is generated and shown
+once in the plugin's own settings screen (Wicket → Integrations → Wicket
+Reporter); only its SHA-256 hash is ever stored.
+
+### Caching
+
+Responses are cached in a transient for **8 hours** (`CACHE_TTL_SECONDS`),
+matching the stack-wide fleet-health caching policy. A repeat request
+inside that window returns the cached body without re-running any
+collector.
+
+A second, longer-lived copy of the same body is kept for **48 hours**
+(`STALE_CACHE_KEY`) specifically to serve concurrent-build lock contention
+(see 503 below) — this is not a second cache tier a normal caller ever
+requests directly.
+
+**Force-refresh bypass**: send `X-Wicket-Reporter-Force-Refresh: 1` to force
+a fresh build past the 8h cache — a header, never a query param, same
+reasoning as the bearer token. Requires a valid bearer token like any other
+request; still counts against the normal rate limit. A forced refresh
+queued behind another in-flight build coalesces onto that build's lock
+rather than starting a second one.
+
+### HTTP status codes
+
+| Status | Meaning | Body |
+|---|---|---|
+| `200` | Success. May carry partial data plus a non-empty `collectorErrors[]` — a 200 does not mean every section is complete. | The status response. |
+| `401` | Missing or invalid API key. | `WP_Error`-shaped: `{code: "wicket_reporter_unauthorized", ...}` |
+| `403` | The reporter is disabled via its settings-screen toggle. The endpoint reveals nothing about whether a key would otherwise be valid — this check runs before the API key is read. | `{code: "wicket_reporter_disabled", ...}` |
+| `429` | Rate limit exceeded — either the per-key bucket (120 requests / 60s) or the independent per-IP bucket (240 requests / 60s, a burst guard keyed on `REMOTE_ADDR` only). No `Retry-After` header today; the fixed 60-second window (see Caching above) is the only signal for how long to back off. | `{code: "wicket_reporter_rate_limited", ...}` |
+| `503` | `wicket-wp-base-plugin` is unavailable (`wicket_reporter_unavailable`), **or** the cache is cold, a build is already in progress, and no stale copy exists to fall back on. | `{code: "wicket_reporter_unavailable", ...}` for the first case (no `Retry-After`); `{error: "status_generation_in_progress"}` for the second, **with** a `Retry-After: 5` header. |
+
+**Note on the package doc**: `packages/wicket-wp-reporter.md` in Atlas
+previously stated the disabled case returns 404. It never has — 403 is
+correct.
+
+### `Retry-After`
+
+Sent today only on the build-in-progress `503` (`Retry-After: 5`) — not on
+`429`, and not on the `wicket_reporter_unavailable` `503` (base-plugin
+missing isn't a transient condition a short retry would resolve). A `429`
+caller currently has to fall back on the known fixed 60-second window
+(see Caching above) to decide when to retry.
+
+### Stale-while-revalidate (`X-Wicket-Reporter-Stale`)
+
+When a request finds the cache cold and a build already in progress (the
+30-second build lock), it serves the 48-hour stale copy instead of a bare
+503, with header `X-Wicket-Reporter-Stale: 1` and the stale copy's own
+original `cache.generatedAt` value still in the body — a caller can always
+tell how old the data actually is by reading that field, regardless of
+which cache tier served it. Only sent when a stale copy exists; genuinely
+first-ever build (or a stale copy that itself expired after 48 hours with
+no successful rebuild) still returns the bare 503 above.
+
 ## Top-level response shape
 
 `composer`, `plugins`, and `themes` are each `{ _meta: {...}, items: [...] }`
@@ -33,27 +99,38 @@ running PHP version, not WordPress's. Reported so a fleet monitor can
 answer "can this site even upgrade WP core" (core has its own PHP
 minimums per release) independently of the WP version check itself.
 
+### `monitor{}`
+
+| Field | Meaning |
+|---|---|
+| `monitor.version` | This plugin's own version (`WICKET_REPORTER_VERSION`) — lets a caller detect a site running an old reporter build. |
+| `monitor.capabilities` | Base sections always present (`wordpress`, `plugins`, `themes`, `composer`) plus each *available* integration adapter's own slug (e.g. `memberships`, `woocommerce`) — mirrors `integrations{}`'s own key-absence rule: an adapter for a plugin this site doesn't have simply isn't listed. |
+| `monitor.degradedCapabilities` | Slugs of any integration adapter whose `collect()` threw this request — that adapter is then absent from both `capabilities` and `integrations{}`, indistinguishable from "never installed" without this field. Also check `collectorErrors[]`: a *truncated* (not thrown) enumeration — e.g. an adapter's tier/config list hitting its cap — reports there instead, under `collector: "integrations.<slug>"`, since it's partial data, not a failure. |
+| `monitor.generationMs` | Wall-clock time (ms) the collector run took to build this body. A cache hit returns the stored body as-is, so this is the cost of whichever build (fresh or stale-lock-served) actually produced the data, not necessarily this request. |
+
 ## Field value reference
 
 | Field | Values | Meaning |
 |---|---|---|
 | `plugins/themes .items[].status` | `active`, `inactive` | Whether WordPress currently has it active. |
 | `plugins/themes .items[].installType` | `composer`, `wordpress`, `manual` | `composer` = matched a `composer.lock` entry by directory name. `wordpress` = no composer match, but a wordpress.org-style `readme.txt` header found. `manual` = neither. |
-| `plugins/themes .items[].updateSource` | `git`, `satispress`, `wordpress-org`, `unknown` | Where the fleet-monitor dashboard checks for a newer version. `git` = Wicket-authored (`industrialdev/*` namespace, or a direct git URL). `satispress` = licensed package (`wicketpress/*`). `wordpress-org` = public wordpress.org directory (`wp-plugin/*` or `wpackagist-plugin/*`/`wpackagist-theme/*` — both proxy the same source). `unknown` = no match. |
-| `plugins/themes .items[].packageKind` | `installable`, `composer-package` | `installable` = a real WP plugin/theme with an actual update channel (wordpress.org, SatisPress, or unknown). `composer-package` = `updateSource` is `git` — a Wicket-authored composer dependency with no plugin-style update channel of its own, even though WordPress still sees it as an installed plugin/theme. Lets a consumer (e.g. the fleet dashboard) separate "real plugins" from "composer-only packages that happen to live in wp-content/plugins" without re-deriving this from `updateSource` itself. |
+| `plugins/themes .items[].updateSource` | `git`, `satispress`, `wordpress-org`, `child-theme`, `unknown` | Where the fleet-monitor dashboard checks for a newer version. `git` = Wicket-authored (`wicket/*`/`industrialdev/*` composer namespace, or a git source resolving to the `industrialdev` GitHub org). `satispress` = licensed package (`wicketpress/*`). `wordpress-org` = public wordpress.org directory (`wp-plugin/*` or `wpackagist-plugin/*`/`wpackagist-theme/*` — both proxy the same source). `child-theme` = themes only; no composer match, and `WP_Theme::get_template()` names a different stylesheet than its own — a real, structurally-detected child theme with no independent update channel by design, not merely unclassified. `unknown` = no match and no other signal. |
+| `plugins/themes .items[].packageKind` | `installable`, `composer-package` | `installable` = a real WP plugin/theme with an actual update channel (wordpress.org, SatisPress, child-theme, or unknown). `composer-package` = `updateSource` is `git` — a Wicket-authored composer dependency with no plugin-style update channel of its own, even though WordPress still sees it as an installed plugin/theme. Lets a consumer (e.g. the fleet dashboard) separate "real plugins" from "composer-only packages that happen to live in wp-content/plugins" without re-deriving this from `updateSource` itself. |
 
-**Known limitation**: a theme that's Wicket-authored but not
-composer-managed (e.g. `wicket-wp-theme`, `wicket-child` — installed
-directly in `web/app/themes/`, no matching `composer.lock` entry) reports
+**Known limitation**: a *parent* theme that's Wicket-authored but not
+composer-managed (e.g. `wicket-wp-theme` installed directly in
+`web/app/themes/`, no matching `composer.lock` entry) still reports
 `installType: manual`/`updateSource: unknown`, even though it genuinely is
-a Wicket git repo. `git`-detection currently only runs off a composer
-package's namespace (T4's `is_wicket_git_package()`); there's no fallback
-detection path for a non-composer-managed Wicket theme yet. Not a bug —
-just a real gap in current coverage, left open rather than adding an ad
-hoc detection heuristic outside any scoped task.
+a Wicket git repo. `git`-detection only runs off a composer package's
+namespace (`is_wicket_git_package()`); there's no fallback detection path
+for a non-composer-managed Wicket *parent* theme. A *child* theme in the
+same situation (e.g. `wicket-child`) is covered — see `child-theme` above —
+since it has its own structural signal (the `Template:` header) that a
+parent theme doesn't. Not a bug for the parent case — just a real gap in
+current coverage.
 | `composer.items[].type` | `wordpress-plugin`, `wordpress-theme`, `wordpress-muplugin`, `wordpress-core` | The only composer package types this plugin reports. |
 | `site.environment` | `production`, `staging`, `development`, `sandbox` | From `wp_get_environment_type()` unless the settings override is set. |
-| `collectorErrors[].collector` | `composer`, `plugins`, `themes`, `integrations`, `integrations.memberships`, `integrations.woocommerce`, `integrations.subscriptions`, `wordpress`, `site` | `composer`/`plugins`/`themes`/`wordpress`/`site` match a top-level collector throwing. `integrations` matches the whole adapter registry failing to load (rare — e.g. a fatal in `Reporter_Integrations::collect()` itself). `integrations.<slug>` matches one specific adapter throwing — every other adapter's data still returns, per the per-adapter isolation in `Reporter_Integrations::collect()`. |
+| `collectorErrors[].collector` | `composer`, `plugins`, `themes`, `integrations`, `integrations.memberships`, `integrations.woocommerce`, `integrations.subscriptions`, `wordpress`, `site` | `composer`/`plugins`/`themes`/`wordpress`/`site` match a top-level collector throwing. `integrations` matches the whole adapter registry failing to load (rare — e.g. a fatal in `Reporter_Integrations::collect()` itself). `integrations.<slug>` matches either one specific adapter throwing (every other adapter's data still returns, per the per-adapter isolation in `Reporter_Integrations::collect()`), or that adapter reporting `tiersOrConfigsTruncated: true` in its own `metrics` — a non-fatal partial-data condition, not a thrown exception, but still appended here so `collectorErrors[]` stays the one place to check whether a response is complete. |
 
 ## Integration adapters
 
@@ -90,13 +167,11 @@ sync with the actual return shape.
 Never fold more than one installable plugin's data into a single adapter,
 even when one plugin depends on another. WooCommerce Subscriptions is a
 separate plugin from WooCommerce core, so `Subscriptions_Adapter` is
-separate from `Woocommerce_Adapter` — this was corrected during T9's
-build, after subscription counts were first added directly to
-`Woocommerce_Adapter`. Folding them together made `is_available()`
-ambiguous (checking which plugin?) and forced a `null`-vs-empty hack to
-signal "Subscriptions isn't installed," instead of `integrations{}` simply
-omitting the `subscriptions` key the same way every other adapter's
-absence already works.
+separate from `Woocommerce_Adapter` — folding them together makes
+`is_available()` ambiguous (checking which plugin?) and forces a
+`null`-vs-empty hack to signal "Subscriptions isn't installed," instead of
+`integrations{}` simply omitting the `subscriptions` key the same way
+every other adapter's absence already works.
 
 ### Convention: every adapter splits into `metrics` + `configuration`
 
@@ -131,12 +206,13 @@ adapter.
 
 | Field | Type | Meaning |
 |---|---|---|
-| `total_memberships` | int | All `wicket_membership` posts, any status. |
+| `total_memberships` | int | `wicket_membership` posts with status `publish`, `private`, `pending`, or `future` — excludes `draft`, `trash`, and `auto-draft`. A membership post that was never published does not count. |
 | `total_active_memberships` | int | Memberships whose `membership_status` meta is `active`, `grace_period`, or `delayed` — matches wicket-wp-memberships' own internal "in force" definition, not just the literal `active` status. |
-| `total_tiers` | int | All `wicket_mship_tier` posts. |
-| `total_configs` | int | All `wicket_mship_config` posts. |
+| `total_tiers` | int | `wicket_mship_tier` posts, same status set as `total_memberships`. |
+| `total_configs` | int | `wicket_mship_config` posts, same status set as `total_memberships`. |
 | `active_by_config[].config` | string | The config post's slug (`post_name`) — join key against `configuration.configs[].config`. |
 | `active_by_config[].active` | int | In-force memberships (same 3-status definition as `total_active_memberships`) whose tier belongs to this config. Every config appears here, even one with zero tiers or zero active memberships. |
+| `tiersOrConfigsTruncated` | bool | `true` when the tier or config enumeration behind `active_by_config[]`/`configuration.configs[]` hit its internal cap (500) — everything above is a partial view, not the whole site. `false` in normal operation. |
 
 #### `configuration` — what's set up, not a number
 

@@ -18,31 +18,45 @@ class Reporter_Log
 
     public static function critical(string $message, array $context = []): void
     {
-        $context['source'] = self::SOURCE;
-        Wicket()->log()->critical($message, $context);
+        self::log('critical', $message, $context);
     }
 
     public static function error(string $message, array $context = []): void
     {
-        $context['source'] = self::SOURCE;
-        Wicket()->log()->error($message, $context);
+        self::log('error', $message, $context);
     }
 
     public static function warning(string $message, array $context = []): void
     {
-        $context['source'] = self::SOURCE;
-        Wicket()->log()->warning($message, $context);
+        self::log('warning', $message, $context);
     }
 
     public static function info(string $message, array $context = []): void
     {
-        $context['source'] = self::SOURCE;
-        Wicket()->log()->info($message, $context);
+        self::log('info', $message, $context);
     }
 
     public static function debug(string $message, array $context = []): void
     {
+        self::log('debug', $message, $context);
+    }
+
+    /**
+     * Wicket() comes from wicket-wp-base-plugin. The admin_init
+     * self-deactivation guard in the main plugin file only covers wp-admin,
+     * not REST — Reporter_Rest::check_permission() calls
+     * Reporter_Log::warning() on its token-rejection path, which an
+     * unauthenticated caller reaches. Without this guard, a REST hit after
+     * base-plugin is deactivated or partly loaded would fatal on
+     * Wicket()->log() instead of returning the intended 401.
+     */
+    private static function log(string $level, string $message, array $context): void
+    {
+        if (!function_exists('Wicket')) {
+            return;
+        }
+
         $context['source'] = self::SOURCE;
-        Wicket()->log()->debug($message, $context);
+        Wicket()->log()->{$level}($message, $context);
     }
 }

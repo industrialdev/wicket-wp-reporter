@@ -119,22 +119,10 @@ class Reporter_Settings
             'default'     => '',
         ]);
 
-        // Masked key display. Custom-rendered rather than a plain 'text'
-        // option: WPSettings' own value system reads from the tab's
-        // aggregate settings option (a single nested array), but only the
-        // key's hash is ever stored (written by ensure_key_exists()/reset),
-        // and a hash can't be shown back as the real value — so this field
-        // bypasses the normal value/save pipeline entirely and just renders
-        // a masked placeholder plus a Reset link. Reset is a plain GET link
-        // (not the settings page's Save Changes/POST path, which has been
-        // unreliable for this plugin's fields on this site, for reasons not
-        // yet root-caused), handled by maybe_handle_reset()
-        // before this tab even renders, and its nonce URL explicitly targets
-        // this same tab (page=wicket-settings&tab=integrations) — clicking
-        // it always lands back here, never a generic admin.php or the tab's
-        // own root. The raw key itself is shown exactly once, via a flash
-        // notice, right after a reset (see admin_notices hook in the main
-        // plugin file).
+        // Custom-rendered: only the key's hash is stored, so there's no
+        // real value to bind to WPSettings' normal save pipeline. Reset is
+        // a separate nonce-protected GET link (see maybe_handle_reset()),
+        // not this tab's own Save Changes/POST.
         $section->add_option('text', [
             'name'        => 'api_key_display',
             'label'       => __('API Key', 'wicket-reporter'),
@@ -158,12 +146,9 @@ class Reporter_Settings
     public static function render_api_key_field($impl): string
     {
         $has_key = (bool) get_option(WICKET_REPORTER_OPTION_API_KEY_HASH, '');
-        $label = esc_html__('API Key', 'wicket-reporter');
         $masked_value = $has_key
-            ? esc_html__('••••••••••••••••••••••••••••••• (hidden — reset to view)', 'wicket-reporter')
-            : esc_html__('No key set', 'wicket-reporter');
-        $description = esc_html__('Add this site to the fleet monitor\'s registry using this key. The raw value is shown once, right after Reset, and is not stored or retrievable afterward.', 'wicket-reporter');
-        $reset_label = esc_html__('Reset', 'wicket-reporter');
+            ? __('••••••••••••••••••••••••••••••• (hidden — reset to view)', 'wicket-reporter')
+            : __('No key set', 'wicket-reporter');
 
         $reset_url = wp_nonce_url(
             add_query_arg(
@@ -182,22 +167,45 @@ class Reporter_Settings
             'wicket_reporter_reset_key'
         );
 
+        // Escaped at the point of each echo below, not pre-escaped into a
+        // variable — no defense-in-depth otherwise if a later edit adds
+        // unescaped content before the echo.
         ob_start();
         ?>
         <tr valign="top">
-            <th scope="row" class="titledesc"><?php echo $label; ?></th>
+            <th scope="row" class="titledesc"><?php echo esc_html__('API Key', 'wicket-reporter'); ?></th>
             <td class="forminp forminp-text">
-                <div style="display: flex; gap: 8px; align-items: center; max-width: 480px;">
-                    <input type="text" readonly value="<?php echo $masked_value; ?>" style="flex: 1;">
+                <div class="wicket-reporter-api-key-row">
+                    <input type="text" readonly value="<?php echo esc_attr($masked_value); ?>">
                     <a href="<?php echo esc_url($reset_url); ?>" class="button button-secondary" onclick="return confirm('<?php echo esc_js(__('Generate a new key? The old key stops working immediately.', 'wicket-reporter')); ?>');">
-                        <?php echo $reset_label; ?>
+                        <?php echo esc_html__('Reset', 'wicket-reporter'); ?>
                     </a>
                 </div>
-                <p class="description"><?php echo $description; ?></p>
+                <p class="description"><?php echo esc_html__('Add this site to the fleet monitor\'s registry using this key. The raw value is shown once, right after Reset, and is not stored or retrievable afterward.', 'wicket-reporter'); ?></p>
             </td>
         </tr>
         <?php
         return (string) ob_get_clean();
+    }
+
+    /**
+     * Enqueues this plugin's admin stylesheet, but only on the Wicket
+     * settings screen. Its hook suffix is `toplevel_page_wicket-settings`,
+     * not the usual `<parent>_page_<child>` — its submenu slug equals its
+     * parent's, which WordPress treats as the parent's own click target.
+     */
+    public static function maybe_enqueue_admin_assets(string $hook_suffix): void
+    {
+        if ('toplevel_page_wicket-settings' !== $hook_suffix) {
+            return;
+        }
+
+        wp_enqueue_style(
+            'wicket-reporter-admin-settings',
+            WICKET_REPORTER_PLUGIN_URL . 'assets/css/admin-settings.css',
+            [],
+            WICKET_REPORTER_VERSION
+        );
     }
 
     /**
@@ -241,87 +249,18 @@ class Reporter_Settings
     }
 
     /**
-     * One-time notice shown after a legacy bcrypt/phpass key hash was
-     * rotated to the fast-hash format on settings-tab render (see
-     * ensure_key_exists). The old key no longer authenticates; the admin
-     * must Reset to get the new raw key and re-register the site.
-     */
-    public static function show_legacy_rotation_notice(): void
-    {
-        if (!current_user_can('manage_options')) {
-            return;
-        }
-
-        $transient_key = 'wicket_reporter_legacy_rotated_' . get_current_user_id();
-
-        if (false === get_transient($transient_key)) {
-            return;
-        }
-
-        delete_transient($transient_key);
-
-        $reset_url = wp_nonce_url(
-            add_query_arg(
-                [
-                    'page'                  => 'wicket-settings',
-                    'tab'                   => 'integrations',
-                    'section'               => 'wicket-reporter',
-                    'wicket_reporter_reset' => '1',
-                ],
-                admin_url('admin.php')
-            ),
-            'wicket_reporter_reset_key'
-        );
-
-        printf(
-            '<div class="notice notice-warning is-dismissible"><p><strong>%s</strong></p><p>%s</p><p><a href="%s" class="button button-secondary">%s</a></p></div>',
-            esc_html__('Wicket Reporter API key upgraded.', 'wicket-reporter'),
-            esc_html__('The stored API key used an older security format and has been replaced. The previous key no longer works. Reset to view the new key and re-register this site with the fleet monitor.', 'wicket-reporter'),
-            esc_url($reset_url),
-            esc_html__('Reset API key', 'wicket-reporter')
-        );
-    }
-
-    /**
-     * Generates and stores an API key (hash only) if none exists, and
-     * rotates any legacy bcrypt/phpass hash to the current fast-hash
-     * format. Called on every settings-tab render (a GET) — a page load
-     * alone guarantees a verifiable key exists.
-     *
-     * Legacy hashes (wp_hash_password output, pre-hardening) can't be
-     * verified by the current SHA-256 compare, so any old key already
-     * stopped authenticating the moment this code shipped. Detecting one
-     * here and replacing it clears the stale hash and makes the field
-     * honest; the raw new key is not flashed on this path, so the admin is
-     * shown a one-time notice to Reset and re-register the site.
+     * Generates and stores an API key (hash only) if none exists yet.
+     * Called on every settings-tab render (a GET) — a page load alone
+     * guarantees a verifiable key exists.
      */
     private static function ensure_key_exists(): void
     {
-        $stored = get_option(WICKET_REPORTER_OPTION_API_KEY_HASH, '');
-
-        if ('' !== $stored && !self::is_legacy_key_hash($stored)) {
+        if ('' !== get_option(WICKET_REPORTER_OPTION_API_KEY_HASH, '')) {
             return;
         }
 
-        $was_legacy = '' !== $stored;
         self::generate_and_store_key();
-
-        if ($was_legacy) {
-            set_transient('wicket_reporter_legacy_rotated_' . get_current_user_id(), 1, 300);
-            Reporter_Log::info('Legacy API key hash rotated to fast-hash format');
-        } else {
-            Reporter_Log::info('API key auto-generated (none existed)');
-        }
-    }
-
-    /**
-     * A current key hash is a 64-char lowercase hex SHA-256. Anything else
-     * is a legacy wp_hash_password() output (bcrypt $2y$, phpass $P$, or
-     * the $wp wrapper) the current verifier cannot match.
-     */
-    private static function is_legacy_key_hash(string $hash): bool
-    {
-        return ! (64 === strlen($hash) && ctype_xdigit($hash));
+        Reporter_Log::info('API key auto-generated (none existed)');
     }
 
     /**
@@ -354,7 +293,8 @@ class Reporter_Settings
     // -------------------------------------------------------------------------
 
     /**
-     * Removes the stored API key hash and any transients on uninstall.
+     * Removes the stored API key hash and this plugin's own transients on
+     * uninstall.
      *
      * Not run on deactivate — deactivating and reactivating must not force
      * key regeneration. The enabled/environment-override fields live inside
@@ -364,27 +304,30 @@ class Reporter_Settings
      * unset from that array rather than deleted as top-level options; the
      * shared option itself is never deleted since other plugins' settings
      * live in it too.
+     *
+     * Cleanup uses delete_transient() rather than a raw `$wpdb` DELETE, so
+     * it also reaches an object cache (Redis, Memcached), not just the
+     * options table. The rate-limit buckets are left alone — their names
+     * are dynamic per key/IP/window and each expires within 60 seconds
+     * anyway.
      */
     public static function on_uninstall(): void
     {
         delete_option(WICKET_REPORTER_OPTION_API_KEY_HASH);
 
         $wicket_settings = get_option('wicket_settings', []);
-        unset($wicket_settings['wicket_reporter_enabled'], $wicket_settings['wicket_reporter_environment_override']);
-        update_option('wicket_settings', $wicket_settings);
 
-        global $wpdb;
-        $wpdb->query(
-            $wpdb->prepare(
-                "DELETE FROM {$wpdb->options} WHERE option_name LIKE %s",
-                $wpdb->esc_like('_transient_' . WICKET_REPORTER_TRANSIENT_PREFIX) . '%'
-            )
-        );
-        $wpdb->query(
-            $wpdb->prepare(
-                "DELETE FROM {$wpdb->options} WHERE option_name LIKE %s",
-                $wpdb->esc_like('_transient_timeout_' . WICKET_REPORTER_TRANSIENT_PREFIX) . '%'
-            )
-        );
+        // A malformed or foreign 'wicket_settings' value (anything but an
+        // array) must not be silently coerced or overwritten — leave it
+        // exactly as found rather than risk destroying another plugin's
+        // settings stored under the same shared option.
+        if (is_array($wicket_settings)) {
+            unset($wicket_settings['wicket_reporter_enabled'], $wicket_settings['wicket_reporter_environment_override']);
+            update_option('wicket_settings', $wicket_settings);
+        }
+
+        delete_transient(WICKET_REPORTER_TRANSIENT_PREFIX . 'status_response');
+        delete_transient(WICKET_REPORTER_TRANSIENT_PREFIX . 'status_response_stale');
+        delete_transient(WICKET_REPORTER_TRANSIENT_PREFIX . 'status_build_lock');
     }
 }

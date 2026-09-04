@@ -4,9 +4,9 @@ name: Auto version bump & tag
 # merged into main. Runs AFTER merge, so the version is computed serially from
 # main and can never collide with a version chosen inside a parallel PR.
 #
-# Bump level (default: patch). Override per-release with a marker anywhere in
-# the merge commit message. With GitHub's default squash-merge the PR title
-# becomes that message, so the marker can just go in the PR title:
+# Bump level (default: patch). Override per-release with a marker on the FIRST
+# LINE of the merge commit message. With GitHub's default squash-merge that line
+# is the PR title, so the marker goes in the PR title:
 #   - "#major" -> X.0.0
 #   - "#minor" -> x.Y.0
 #   - otherwise -> x.y.Z (patch)
@@ -70,7 +70,12 @@ jobs:
         env:
           COMMIT_MSG: ${{ github.event.head_commit.message }}
         run: |
-          msg="$COMMIT_MSG"
+          # First line only. Under squash-merge that is the PR title, which is
+          # where AGENTS.md documents the marker. Matching the whole message
+          # also matches the body, and squash-merge appends every branch commit
+          # subject to the body — so a commit reading "chore: drop #norelease
+          # from the docs" would silently suppress a real release.
+          msg="$(printf '%s\n' "$COMMIT_MSG" | head -1)"
           level="patch"
           if echo "$msg" | grep -qiE '#norelease'; then
             level="none"
@@ -90,9 +95,14 @@ jobs:
         if: ${{ steps.level.outputs.level != 'none' }}
         id: bump
         run: |
-          NEW_VERSION="$(php ./.ci/version-bump.php ${{ steps.level.outputs.level }} | tail -1)"
+          OUT="$(php ./.ci/version-bump.php ${{ steps.level.outputs.level }})"
+          NEW_VERSION="$(printf '%s\n' "$OUT" | tail -1)"
+          # The bumper lists the files it actually modified as "file: <path>"
+          # lines, so the commit step stages exactly those and never globs.
+          BUMPED_FILES="$(printf '%s\n' "$OUT" | sed -n 's/^file: //p' | tr '\n' ' ')"
           echo "new_version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
-          echo "Bumped to $NEW_VERSION"
+          echo "bumped_files=$BUMPED_FILES" >> "$GITHUB_OUTPUT"
+          echo "Bumped to $NEW_VERSION (files: $BUMPED_FILES)"
 
       - name: Generate changelog entry
         if: ${{ steps.level.outputs.level != 'none' }}
@@ -102,12 +112,16 @@ jobs:
         if: ${{ steps.level.outputs.level != 'none' }}
         env:
           NEW_VERSION: ${{ steps.bump.outputs.new_version }}
+          BUMPED_FILES: ${{ steps.bump.outputs.bumped_files }}
           APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
           BOT_USER_ID: ${{ steps.bot.outputs.user-id }}
         run: |
           git config user.name  "${APP_SLUG}[bot]"
           git config user.email "${BOT_USER_ID}+${APP_SLUG}[bot]@users.noreply.github.com"
-          git add composer.json CHANGELOG.md ./*.php
+          # Stage only CHANGELOG.md plus the exact files the bumper reported.
+          # A ./*.php glob would also commit any stray root PHP file a merged
+          # PR left behind, authored by an identity that holds ruleset bypass.
+          git add CHANGELOG.md $BUMPED_FILES
           git commit -m "chore(release): ${NEW_VERSION}"
           git tag "${NEW_VERSION}"
           git push origin HEAD:main

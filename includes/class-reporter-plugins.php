@@ -46,12 +46,10 @@ class Reporter_Plugins
                 'updateSource'    => $update_source,
                 'packageKind'     => self::package_kind_from_update_source($update_source),
                 // latestVersion/updateAvailable deliberately omitted, not
-                // set to null — M1 has no external version-lookup (see the
-                // plan's Out of scope section), so it genuinely doesn't
-                // know this state. A null value reads ambiguously close to
-                // "no update available" in naive client code (falsy check);
-                // omitting the key is an unambiguous "unknown here." M2
-                // adds these keys itself once it has real data.
+                // set to null — this plugin has no external version-lookup.
+                // A null value reads ambiguously close to "no update
+                // available" under a naive falsy check; omitting the key
+                // is unambiguous "unknown here."
             ];
         }
 
@@ -65,22 +63,36 @@ class Reporter_Plugins
     public static function collect_themes(array $composer_packages): array
     {
         $by_directory = self::index_composer_packages_by_directory($composer_packages);
-        $active_stylesheet = get_option('stylesheet');
+
+        // get_stylesheet() is core's filtered accessor
+        // (apply_filters('stylesheet', get_option('stylesheet'))) — reading
+        // the raw option bypassed that filter. WPML's per-language theme
+        // switching, and any theme-switcher/A-B plugin, filters this hook,
+        // so the raw option can name the wrong theme as active on this
+        // stack. get_template() is the matching filtered accessor for the
+        // active theme's parent, used below to also mark a child theme's
+        // parent active — it is genuinely in use, but comparing only
+        // $stylesheet === $active_stylesheet always reported it inactive.
+        $active_stylesheet = get_stylesheet();
+        $active_template = get_template();
         $entries = [];
 
         foreach (wp_get_themes() as $stylesheet => $theme) {
             $match = $by_directory[$stylesheet] ?? null;
+            $is_child_theme = $theme->get_template() !== $stylesheet;
 
             $update_source = null !== $match
                 ? $match['updateSource']
-                : self::detect_manual_update_source($stylesheet, true);
+                : self::detect_manual_theme_update_source($stylesheet, $is_child_theme);
+
+            $is_active = $stylesheet === $active_stylesheet || $stylesheet === $active_template;
 
             $entries[] = [
                 'stylesheet'      => $stylesheet,
                 'template'        => $theme->get_template(),
                 'name'            => (string) $theme->get('Name'),
                 'version'         => (string) $theme->get('Version'),
-                'status'          => $stylesheet === $active_stylesheet ? 'active' : 'inactive',
+                'status'          => $is_active ? 'active' : 'inactive',
                 'installType'     => null !== $match ? 'composer' : self::detect_manual_install_type($stylesheet, true),
                 'composerPackage' => $match['name'] ?? null,
                 'updateSource'    => $update_source,
@@ -190,5 +202,15 @@ class Reporter_Plugins
     private static function detect_manual_update_source(string $slug, bool $is_theme = false): string
     {
         return 'wordpress' === self::detect_manual_install_type($slug, $is_theme) ? 'wordpress-org' : 'unknown';
+    }
+
+    /** Themes only — a child theme has no independent update channel by design, distinct from a genuinely unclassified `unknown`. */
+    private static function detect_manual_theme_update_source(string $slug, bool $is_child_theme): string
+    {
+        if ($is_child_theme) {
+            return 'child-theme';
+        }
+
+        return self::detect_manual_update_source($slug, true);
     }
 }

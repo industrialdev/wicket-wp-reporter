@@ -1,0 +1,11 @@
+/* API key field layout, rendered by Reporter_Settings::render_api_key_field(). */
+.wicket-reporter-api-key-row {
+	display: flex;
+	gap: 8px;
+	align-items: center;
+	max-width: 480px;
+}
+
+.wicket-reporter-api-key-row input[type="text"] {
+	flex: 1;
+}

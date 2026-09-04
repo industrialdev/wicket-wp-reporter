@@ -17,12 +17,29 @@ class Reporter_Rest
     private const ROUTE = '/status';
 
     /** Rate limit: max requests per key within the window below. */
-    private const RATE_LIMIT_MAX_REQUESTS = 60;
+    private const RATE_LIMIT_MAX_REQUESTS = 120;
     private const RATE_LIMIT_WINDOW_SECONDS = 60;
+
+    /**
+     * Independent per-IP ceiling, same window, so one misbehaving caller
+     * cannot spend a shared key's whole budget. Higher than the per-key
+     * ceiling so it is a burst guard, not the binding limit in normal
+     * operation — the per-key ceiling stays the real budget.
+     */
+    private const RATE_LIMIT_MAX_REQUESTS_PER_IP = 240;
 
     /** 8h flat TTL, matching the stack-wide caching policy. No early-bust hooks — TTL-only, by design. */
     private const CACHE_TTL_SECONDS = 8 * HOUR_IN_SECONDS;
     private const CACHE_KEY = WICKET_REPORTER_TRANSIENT_PREFIX . 'status_response';
+
+    /**
+     * 48h fallback copy: an expired cache degrades to slightly-stale data
+     * instead of a hard 503, since the monitor drops any non-2xx site
+     * entirely from the dashboard rather than showing it merely behind.
+     */
+    private const STALE_CACHE_KEY = WICKET_REPORTER_TRANSIENT_PREFIX . 'status_response_stale';
+    private const STALE_CACHE_TTL_SECONDS = 48 * HOUR_IN_SECONDS;
+    private const STALE_HEADER = 'X-Wicket-Reporter-Stale';
 
     public static function register_routes(): void
     {
@@ -30,33 +47,10 @@ class Reporter_Rest
             'methods'             => 'GET',
             'callback'            => [__CLASS__, 'handle_status'],
             'permission_callback' => [__CLASS__, 'check_permission'],
+            // Keeps this route out of the public, unauthenticated GET
+            // /wp-json index. Still requires the bearer token regardless.
+            'show_in_index'       => false,
         ]);
-
-        // M1: bearer auth never establishes a WP user, so WP's default
-        // is_user_logged_in() gate sends NO nocache headers. Without this,
-        // a full site inventory (plugin list, versions, private repo slugs,
-        // commit references) ships with no Cache-Control and can be cached
-        // by an intermediary or misconfigured edge and served to an
-        // unauthenticated requester. Scope the nocache gate to this route.
-        add_filter('rest_send_nocache_headers', [__CLASS__, 'force_nocache_for_status']);
-    }
-
-    /**
-     * Forces WP's REST nocache headers, but only for this plugin's route —
-     * leaving every other REST endpoint's caching policy untouched.
-     */
-    public static function force_nocache_for_status(bool $nocache): bool
-    {
-        $uri = isset($_SERVER['REQUEST_URI']) ? (string) $_SERVER['REQUEST_URI'] : '';
-
-        if (
-            false !== strpos($uri, '/wicket-reporter/v1/')
-            || false !== strpos($uri, 'rest_route=/wicket-reporter/v1/')
-        ) {
-            return true;
-        }
-
-        return $nocache;
     }
 
     /**
@@ -71,10 +65,10 @@ class Reporter_Rest
      */
     public static function check_permission(WP_REST_Request $request)
     {
-        // S5: wicket_get_option()/Wicket()->log() come from wicket-wp-base-plugin.
-        // The admin_init self-deactivation guard only covers wp-admin, not
-        // REST — without this guard a REST hit after base-plugin removal
-        // would call an undefined function and fatal to a stack trace.
+        // wicket_get_option()/Wicket()->log() come from wicket-wp-base-plugin;
+        // its own self-deactivation guard only covers wp-admin, not REST —
+        // without this check, a REST hit after base-plugin's removal would
+        // fatal on an undefined function instead of returning 503.
         if (!function_exists('wicket_get_option')) {
             return new WP_Error(
                 'wicket_reporter_unavailable',
@@ -94,15 +88,10 @@ class Reporter_Rest
         $token = self::get_bearer_token($request);
         $stored_hash = get_option(WICKET_REPORTER_OPTION_API_KEY_HASH, '');
 
-        // S1: API keys are 48-char CSPRNG tokens (~285 bits), so the slow
-        // password hashing wp_check_password() applies is pure overhead AND
-        // a CPU-amplification DoS vector on this unauthenticated endpoint
-        // (any caller sending 'Authorization: Bearer x' forced a bcrypt
-        // verify, unthrottled, since the rate limit runs only after auth).
-        // Store and compare a fast SHA-256 with hash_equals() (constant-
-        // time). A legacy bcrypt/phpass hash has a different length and
-        // simply fails this compare; it is rotated on the next settings-tab
-        // render (Reporter_Settings::ensure_key_exists).
+        // A 285-bit CSPRNG token has no offline brute-force threat, so the
+        // slow KDF wp_check_password() needs is pure overhead here — worse,
+        // it's an unthrottled CPU-amplification DoS vector, since the rate
+        // limit below runs only after this check. Fast SHA-256 + hash_equals().
         if ('' === $token || '' === $stored_hash || !hash_equals(Reporter_Settings::hash_token($token), $stored_hash)) {
             Reporter_Log::warning('REST request rejected: missing or invalid API key');
 
@@ -113,10 +102,30 @@ class Reporter_Rest
             );
         }
 
-        $rate_limit_error = self::check_rate_limit($token);
+        $rate_limit_error = self::check_rate_limit(
+            'ratelimit_' . md5($token),
+            self::RATE_LIMIT_MAX_REQUESTS
+        );
 
         if (null !== $rate_limit_error) {
             return $rate_limit_error;
+        }
+
+        // Independent bucket, keyed on REMOTE_ADDR only — never
+        // X-Forwarded-For/Client-IP, which no trusted-proxy allowlist in
+        // this stack validates, so a caller could dodge the limit by
+        // sending a fresh fake value every request.
+        $ip = isset($_SERVER['REMOTE_ADDR']) ? (string) $_SERVER['REMOTE_ADDR'] : '';
+
+        if ('' !== $ip) {
+            $ip_rate_limit_error = self::check_rate_limit(
+                'ratelimit_ip_' . md5($ip),
+                self::RATE_LIMIT_MAX_REQUESTS_PER_IP
+            );
+
+            if (null !== $ip_rate_limit_error) {
+                return $ip_rate_limit_error;
+            }
         }
 
         return true;
@@ -159,24 +168,21 @@ class Reporter_Rest
     }
 
     /**
-     * Per-key transient counter rate limit, same shape as
-     * WicketGuestPaymentAuth's failed-attempt counter
-     * (wicket-wp-guest-checkout/src/WicketGuestPaymentAuth.php).
-     *
-     * Keyed on a hash of the raw token (never the token itself, so the
-     * transient name doesn't itself become a place the raw key sits in
-     * plaintext) rather than the API key's own stored hash, since a
-     * transient name has a length ceiling and this only needs to be a
-     * stable, collision-resistant identifier for the same key.
+     * Fixed-window transient counter, shared by the per-key and per-IP
+     * buckets. The key folds in a time bucket (floor(time() / WINDOW)), not
+     * just $bucket_key — set_transient() renews TTL on every write, so a
+     * counter keyed on $bucket_key alone would have its window pushed
+     * forward by every request near the ceiling, throttling indefinitely.
      *
      * @return WP_Error|null Error to return (429) if the limit is exceeded, else null.
      */
-    private static function check_rate_limit(string $token): ?WP_Error
+    private static function check_rate_limit(string $bucket_key, int $max_requests): ?WP_Error
     {
-        $transient_key = WICKET_REPORTER_TRANSIENT_PREFIX . 'ratelimit_' . md5($token);
+        $bucket = (int) floor(time() / self::RATE_LIMIT_WINDOW_SECONDS);
+        $transient_key = WICKET_REPORTER_TRANSIENT_PREFIX . $bucket_key . '_' . $bucket;
         $count = (int) get_transient($transient_key);
 
-        if ($count >= self::RATE_LIMIT_MAX_REQUESTS) {
+        if ($count >= $max_requests) {
             Reporter_Log::info('REST request throttled: rate limit exceeded');
 
             return new WP_Error(
@@ -191,28 +197,72 @@ class Reporter_Rest
         return null;
     }
 
+    /** Forces a fresh build past the cache — a header, never a query param, same reasoning as the bearer token itself. Requires check_permission() to have already authenticated the request. */
+    private const FORCE_REFRESH_HEADER = 'X-Wicket-Reporter-Force-Refresh';
+
     /**
-     * Serves the cached response if present, else builds and caches it —
-     * so a repeat request skips every collector entirely.
+     * Thin wrapper around handle_status_internal() — its only job is
+     * forcing nocache headers onto whatever WP_REST_Response comes back.
+     *
+     * Bearer auth never establishes a WP user, so the default
+     * is_user_logged_in() nocache gate never fires for this route. A prior
+     * version tried to force it via the rest_send_nocache_headers filter,
+     * added from a rest_request_after_callbacks hook — too late to matter:
+     * WP_REST_Server::serve_request() reads rest_send_nocache_headers and
+     * sends Cache-Control before dispatch() ever runs, and
+     * rest_request_after_callbacks only fires after dispatch() returns.
+     * Setting response-object headers directly (sent from the response
+     * itself, after dispatch) is the only place this can still take effect.
      */
     public static function handle_status(WP_REST_Request $request): WP_REST_Response
     {
-        $cached = get_transient(self::CACHE_KEY);
+        $response = self::handle_status_internal($request);
 
-        if (false !== $cached && is_array($cached)) {
-            return new WP_REST_Response($cached, 200);
+        foreach (wp_get_nocache_headers() as $name => $value) {
+            $response->header($name, $value);
         }
 
-        // M3: coalesce concurrent cache-miss builds with a short lock. A
-        // slow or timed-out generation can otherwise be re-triggered by
-        // every incoming request up to the rate limit — a self-sustaining
-        // load spike with no back-off (and the heaviest collectors, on a
-        // large member site, are exactly the ones that can time out).
-        // First request in builds; the rest get 503 + Retry-After. The
-        // TTL is the safety net if the builder dies before `finally`.
+        return $response;
+    }
+
+    /**
+     * Serves the cached response if present, else builds and caches it. An
+     * already-authenticated caller can force past the cache with the header
+     * above — TTL-only invalidation otherwise gives the monitor's "Refresh"
+     * action no way to mean "recompute now." Skips the plain cache reads,
+     * not the build lock itself: forced-refresh calls still coalesce onto
+     * one in-flight build.
+     */
+    private static function handle_status_internal(WP_REST_Request $request): WP_REST_Response
+    {
+        $force_refresh = '' !== trim((string) $request->get_header(self::FORCE_REFRESH_HEADER));
+
+        if (!$force_refresh) {
+            $cached = get_transient(self::CACHE_KEY);
+
+            if (false !== $cached && is_array($cached)) {
+                return new WP_REST_Response($cached, 200);
+            }
+        }
+
+        // Coalesces concurrent cache-miss builds with a short lock — without
+        // it, a slow generation gets re-triggered by every incoming request
+        // up to the rate limit, a self-sustaining load spike with no
+        // back-off. First request in builds; the rest get the stale copy
+        // or a 503. The TTL is the safety net if the builder dies before
+        // `finally`.
         $lock_key = WICKET_REPORTER_TRANSIENT_PREFIX . 'status_build_lock';
 
         if (false !== get_transient($lock_key)) {
+            $stale = get_transient(self::STALE_CACHE_KEY);
+
+            if (false !== $stale && is_array($stale)) {
+                return new WP_REST_Response($stale, 200, [self::STALE_HEADER => '1']);
+            }
+
+            // Genuinely nothing to serve — this is the first-ever build, or
+            // the stale copy has also expired (48h with no successful
+            // build). Only path left is asking the caller to wait.
             return new WP_REST_Response(
                 ['error' => 'status_generation_in_progress'],
                 503,
@@ -223,17 +273,21 @@ class Reporter_Rest
         set_transient($lock_key, 1, 30);
 
         try {
-            // Re-check after winning the lock: another request may have
-            // just finished building while this one was queued.
-            $cached = get_transient(self::CACHE_KEY);
+            // Re-check after winning the lock — another request may have
+            // just finished building. Skipped under a forced refresh, same
+            // reason as the top-level check.
+            if (!$force_refresh) {
+                $cached = get_transient(self::CACHE_KEY);
 
-            if (false !== $cached && is_array($cached)) {
-                return new WP_REST_Response($cached, 200);
+                if (false !== $cached && is_array($cached)) {
+                    return new WP_REST_Response($cached, 200);
+                }
             }
 
             $body = self::build_status_body();
 
             set_transient(self::CACHE_KEY, $body, self::CACHE_TTL_SECONDS);
+            set_transient(self::STALE_CACHE_KEY, $body, self::STALE_CACHE_TTL_SECONDS);
 
             return new WP_REST_Response($body, 200);
         } finally {
@@ -248,14 +302,9 @@ class Reporter_Rest
      * plugin/theme collectors, since those cross-reference its parsed
      * output to derive installType/updateSource per plugin/theme. Every
      * collector is individually wrapped, both in Reporter_Timer::time()
-     * (audit log) and try/catch (Endpoint resilience — one failing collector
-     * never 500s the whole response; its section is omitted/empty and the
-     * failure appended to collectorErrors[]).
-     *
-     * TODO: integrations{} has no adapters registered yet — memberships
-     * (T7) and WooCommerce (T12) will add themselves to
-     * Reporter_Integrations::$adapters once built, and this method needs
-     * no change when they do.
+     * (audit log) and try/catch — one failing collector never 500s the
+     * whole response; its section is omitted/empty and the failure
+     * appended to collectorErrors[].
      */
     private static function build_status_body(): array
     {
@@ -281,6 +330,19 @@ class Reporter_Rest
             $collector_errors[] = ['collector' => "integrations.{$slug}", 'message' => $message];
         }
 
+        // A truncated enumeration is partial data, not a thrown failure, so
+        // it never reaches integrations_result['errors'] above — but a
+        // caller relying on collectorErrors[] as the one place to check for
+        // "is this response complete" would otherwise miss it silently.
+        foreach ($integrations as $slug => $integration) {
+            if (true === ($integration['metrics']['tiersOrConfigsTruncated'] ?? false)) {
+                $collector_errors[] = [
+                    'collector' => "integrations.{$slug}",
+                    'message'   => 'Tier/config enumeration was truncated at the configured cap; some tiers or configs are omitted.',
+                ];
+            }
+        }
+
         $body = [
             'schemaVersion' => 1,
             'generatedAt'   => $now,
@@ -295,6 +357,10 @@ class Reporter_Rest
                 // integrations{}'s own key-absence rule: a site without
                 // that integration doesn't list it here either.
                 'capabilities' => array_merge(['wordpress', 'plugins', 'themes', 'composer'], array_keys($integrations)),
+                // An adapter whose collect() threw is absent from
+                // `capabilities` and `integrations{}` alike — otherwise
+                // indistinguishable from never having been installed.
+                'degradedCapabilities' => array_keys($integrations_result['errors'] ?? []),
                 'generationMs' => null, // filled in below, after Reporter_Timer::finish_request()
             ],
             'site'      => Reporter_Timer::time('site', static fn () => self::get_site_info()),
@@ -392,10 +458,26 @@ class Reporter_Rest
      * site.name from get_bloginfo('name'), site.environment from
      * wp_get_environment_type() unless the settings override is set.
      */
+    /**
+     * Every value the settings dropdown (Reporter_Settings::register_settings)
+     * can legally write, besides the empty "Auto-detect" default.
+     */
+    private const VALID_ENVIRONMENT_OVERRIDES = ['production', 'staging', 'development', 'sandbox'];
+
     private static function get_site_info(): array
     {
         $override = wicket_get_option('wicket_reporter_environment_override', '');
-        $environment = '' !== $override ? $override : wp_get_environment_type();
+
+        // The settings dropdown constrains input to the list above, but this
+        // reads from the shared wicket_settings option, which
+        // wicket-wp-portus also writes during config import — so the value
+        // can arrive from an import, not only the dropdown. site.environment
+        // feeds staging-only guardrails elsewhere in this stack (see
+        // wicket-cloudways-ssh-debug), so an unvalidated or malformed value
+        // here is a safety-rail bypass, not just a cosmetic wrong label.
+        $environment = (is_string($override) && in_array($override, self::VALID_ENVIRONMENT_OVERRIDES, true))
+            ? $override
+            : wp_get_environment_type();
 
         $host = wp_parse_url(home_url(), PHP_URL_HOST) ?: home_url();
         $site_id = sanitize_title(str_replace('.', '-', (string) $host));

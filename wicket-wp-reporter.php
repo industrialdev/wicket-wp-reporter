@@ -30,6 +30,7 @@ require_once WICKET_REPORTER_PLUGIN_DIR . 'includes/class-reporter-timer.php';
 require_once WICKET_REPORTER_PLUGIN_DIR . 'includes/class-reporter-composer.php';
 require_once WICKET_REPORTER_PLUGIN_DIR . 'includes/class-reporter-plugins.php';
 require_once WICKET_REPORTER_PLUGIN_DIR . 'includes/Integrations/interface-integration-adapter.php';
+require_once WICKET_REPORTER_PLUGIN_DIR . 'includes/Integrations/class-post-status-counts.php';
 require_once WICKET_REPORTER_PLUGIN_DIR . 'includes/Integrations/class-memberships-adapter.php';
 require_once WICKET_REPORTER_PLUGIN_DIR . 'includes/Integrations/class-woocommerce-adapter.php';
 require_once WICKET_REPORTER_PLUGIN_DIR . 'includes/Integrations/class-subscriptions-adapter.php';
@@ -43,13 +44,12 @@ add_action('rest_api_init', ['Reporter_Rest', 'register_routes']);
 add_filter('wicket_settings_tabs', ['Reporter_Settings', 'extend_settings_tabs'], 20);
 add_filter('wicket_settings_tab_int', ['Reporter_Settings', 'extend_settings_tab_fallback'], 20);
 
+add_action('admin_enqueue_scripts', ['Reporter_Settings', 'maybe_enqueue_admin_assets']);
+
 // Reset API Key link (see render_api_key_field) — a plain GET, handled
 // before the tab renders so maybe_handle_reset can flash the new raw key
 // via a short-lived transient (see admin_notices hook below).
 add_action('admin_init', ['Reporter_Settings', 'maybe_handle_reset']);
-
-// S1: one-time notice when a legacy key hash gets rotated on tab render.
-add_action('admin_notices', ['Reporter_Settings', 'show_legacy_rotation_notice']);
 
 /**
  * Show a newly generated/reset raw API key once, immediately after the
