@@ -222,7 +222,14 @@ class VersionBumper
         }
 
         if ($successCount !== count($this->filesToUpdate)) {
-            fwrite(STDERR, "{$successCount} out of " . count($this->filesToUpdate) . " files were updated\n");
+            // A partial update (e.g. composer.json updated but the plugin
+            // header's docblock pattern missed) must not exit 0 — release.yml
+            // stages exactly the reported files, then commits, tags, and
+            // pushes on this exit code, so a silent partial failure ships a
+            // release where the plugin header and composer.json permanently
+            // disagree on version.
+            fwrite(STDERR, "Error: {$successCount} out of " . count($this->filesToUpdate) . " files were updated\n");
+            exit(1);
         }
 
         fwrite(STDERR, "Version bump completed: {$this->currentVersion} -> {$newVersion}\n");
