@@ -51,26 +51,6 @@ class Reporter_Rest
             // /wp-json index. Still requires the bearer token regardless.
             'show_in_index'       => false,
         ]);
-
-        // Bearer auth never establishes a WP user, so the default
-        // is_user_logged_in() nocache gate never fires here — without this,
-        // a full site inventory ships with no Cache-Control and can be
-        // cached by an intermediary and served to an unauthenticated caller.
-        add_filter('rest_request_after_callbacks', [__CLASS__, 'maybe_force_nocache_for_status'], 10, 3);
-    }
-
-    /**
-     * Adds the nocache-forcing filter only once dispatch has resolved to
-     * this plugin's own route — rest_send_nocache_headers itself gets no
-     * $request to check, so this earlier, request-aware filter stands in.
-     */
-    public static function maybe_force_nocache_for_status($response, array $handler, WP_REST_Request $request)
-    {
-        if ('/' . self::NAMESPACE . self::ROUTE === $request->get_route()) {
-            add_filter('rest_send_nocache_headers', '__return_true');
-        }
-
-        return $response;
     }
 
     /**
@@ -221,6 +201,31 @@ class Reporter_Rest
     private const FORCE_REFRESH_HEADER = 'X-Wicket-Reporter-Force-Refresh';
 
     /**
+     * Thin wrapper around handle_status_internal() — its only job is
+     * forcing nocache headers onto whatever WP_REST_Response comes back.
+     *
+     * Bearer auth never establishes a WP user, so the default
+     * is_user_logged_in() nocache gate never fires for this route. A prior
+     * version tried to force it via the rest_send_nocache_headers filter,
+     * added from a rest_request_after_callbacks hook — too late to matter:
+     * WP_REST_Server::serve_request() reads rest_send_nocache_headers and
+     * sends Cache-Control before dispatch() ever runs, and
+     * rest_request_after_callbacks only fires after dispatch() returns.
+     * Setting response-object headers directly (sent from the response
+     * itself, after dispatch) is the only place this can still take effect.
+     */
+    public static function handle_status(WP_REST_Request $request): WP_REST_Response
+    {
+        $response = self::handle_status_internal($request);
+
+        foreach (wp_get_nocache_headers() as $name => $value) {
+            $response->header($name, $value);
+        }
+
+        return $response;
+    }
+
+    /**
      * Serves the cached response if present, else builds and caches it. An
      * already-authenticated caller can force past the cache with the header
      * above — TTL-only invalidation otherwise gives the monitor's "Refresh"
@@ -228,7 +233,7 @@ class Reporter_Rest
      * not the build lock itself: forced-refresh calls still coalesce onto
      * one in-flight build.
      */
-    public static function handle_status(WP_REST_Request $request): WP_REST_Response
+    private static function handle_status_internal(WP_REST_Request $request): WP_REST_Response
     {
         $force_refresh = '' !== trim((string) $request->get_header(self::FORCE_REFRESH_HEADER));
 
