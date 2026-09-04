@@ -99,6 +99,15 @@ running PHP version, not WordPress's. Reported so a fleet monitor can
 answer "can this site even upgrade WP core" (core has its own PHP
 minimums per release) independently of the WP version check itself.
 
+### `monitor{}`
+
+| Field | Meaning |
+|---|---|
+| `monitor.version` | This plugin's own version (`WICKET_REPORTER_VERSION`) — lets a caller detect a site running an old reporter build. |
+| `monitor.capabilities` | Base sections always present (`wordpress`, `plugins`, `themes`, `composer`) plus each *available* integration adapter's own slug (e.g. `memberships`, `woocommerce`) — mirrors `integrations{}`'s own key-absence rule: an adapter for a plugin this site doesn't have simply isn't listed. |
+| `monitor.degradedCapabilities` | Slugs of any integration adapter whose `collect()` threw this request — that adapter is then absent from both `capabilities` and `integrations{}`, indistinguishable from "never installed" without this field. Also check `collectorErrors[]`: a *truncated* (not thrown) enumeration — e.g. an adapter's tier/config list hitting its cap — reports there instead, under `collector: "integrations.<slug>"`, since it's partial data, not a failure. |
+| `monitor.generationMs` | Wall-clock time (ms) the collector run took to build this body. A cache hit returns the stored body as-is, so this is the cost of whichever build (fresh or stale-lock-served) actually produced the data, not necessarily this request. |
+
 ## Field value reference
 
 | Field | Values | Meaning |
