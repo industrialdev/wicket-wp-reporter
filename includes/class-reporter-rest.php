@@ -325,6 +325,19 @@ class Reporter_Rest
             $collector_errors[] = ['collector' => "integrations.{$slug}", 'message' => $message];
         }
 
+        // A truncated enumeration is partial data, not a thrown failure, so
+        // it never reaches integrations_result['errors'] above — but a
+        // caller relying on collectorErrors[] as the one place to check for
+        // "is this response complete" would otherwise miss it silently.
+        foreach ($integrations as $slug => $integration) {
+            if (true === ($integration['metrics']['tiersOrConfigsTruncated'] ?? false)) {
+                $collector_errors[] = [
+                    'collector' => "integrations.{$slug}",
+                    'message'   => 'Tier/config enumeration was truncated at the configured cap; some tiers or configs are omitted.',
+                ];
+            }
+        }
+
         $body = [
             'schemaVersion' => 1,
             'generatedAt'   => $now,
