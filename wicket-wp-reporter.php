@@ -39,6 +39,50 @@ require_once WICKET_REPORTER_PLUGIN_DIR . 'includes/class-reporter-rest.php';
 
 add_action('rest_api_init', ['Reporter_Rest', 'register_routes']);
 
+/**
+ * Claims authentication for this plugin's own namespace before any site-wide
+ * auth plugin gets to inspect the request.
+ *
+ * Plugins such as Simple JWT Login (its "JWT Middleware for all WordPress
+ * endpoints" option) hook rest_authentication_errors globally at priority 0
+ * and try to decode any Authorization: Bearer value as a JWT, on every route,
+ * not just their own. They never ask whether the target route wanted their
+ * authentication, only whether a token is present. Our key is a 48-char
+ * wp_generate_password() string, so their decode throws ("Wrong number of
+ * segments") and they hand core a WP_Error from check_authentication(), which
+ * runs before dispatch(). Reporter_Rest::check_permission() then never
+ * executes at all, and the fleet monitor sees a 4xx indistinguishable from a
+ * genuinely bad key.
+ *
+ * Returning true is core's documented "this authentication method was used,
+ * and it succeeded" signal (see WP_REST_Server::check_authentication). It sets
+ * no current user and bypasses none of our own auth: dispatch() still runs,
+ * and check_permission() still requires a valid bearer token before anything
+ * is served. Every global handler in this chain, Simple JWT Login's middleware
+ * and its WooCommerce and Force Login integrations along with core's own
+ * rest_cookie_check_errors, opens with a bail-if-already-decided guard, so one
+ * early true clears them all at once without naming or depending on the
+ * internals of any single plugin.
+ *
+ * Scoped strictly to wicket-reporter/v1. Every other route on the site keeps
+ * whatever authentication stack it had.
+ */
+add_filter('rest_authentication_errors', static function ($errors) {
+    if (null !== $errors) {
+        return $errors;
+    }
+
+    // Set by WP during parse_request, well before serve_request() applies this
+    // filter, for both /wp-json/... and ?rest_route=... request forms.
+    $route = $GLOBALS['wp']->query_vars['rest_route'] ?? '';
+
+    if (!is_string($route) || !str_starts_with(ltrim($route, '/'), 'wicket-reporter/v1/')) {
+        return $errors;
+    }
+
+    return true;
+}, -PHP_INT_MAX);
+
 // Register the settings section in the Wicket Integrations tab.
 // Same wicket_settings_tabs pattern as OSL_Limiter / WicketGuestPaymentConfig.
 add_filter('wicket_settings_tabs', ['Reporter_Settings', 'extend_settings_tabs'], 20);
