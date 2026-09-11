@@ -22,7 +22,7 @@ Part of the Fleet Health Monitor project. Plan and full design: [`wicket-atlas/p
 1. Activate the plugin (requires `wicket-wp-base-plugin` active first).
 2. Go to **Wicket → Integrations → Wicket Reporter**.
 3. Toggle **Enable Wicket Reporter**.
-4. Click **Generate Key** and copy the raw key shown — it is shown once and not stored anywhere retrievable afterward.
+4. Click **Reset** and copy the raw key shown — it is shown once at the top in the status flash and not stored anywhere retrievable afterward.
 5. Add this site to `wicket-fleet-monitor`'s site registry using that key (see that repo's docs for the registry entry format).
 
 ## Settings
