@@ -34,9 +34,12 @@ requests directly.
 **Force-refresh bypass**: send `X-Wicket-Reporter-Force-Refresh: 1` to force
 a fresh build past the 8h cache — a header, never a query param, same
 reasoning as the bearer token. Requires a valid bearer token like any other
-request; still counts against the normal rate limit. A forced refresh
-queued behind another in-flight build coalesces onto that build's lock
-rather than starting a second one.
+request; counts against the normal rate limit *and* its own, much stricter
+per-key budget (1 request / 60s) — a forced refresh is always a full
+recompute (never served from this plugin's own cache), so it gets a
+separate ceiling on top of the general one. A forced refresh queued behind
+another in-flight build coalesces onto that build's lock rather than
+starting a second one.
 
 ### HTTP status codes
 
@@ -45,7 +48,7 @@ rather than starting a second one.
 | `200` | Success. May carry partial data plus a non-empty `collectorErrors[]` — a 200 does not mean every section is complete. | The status response. |
 | `401` | Missing or invalid API key. | `WP_Error`-shaped: `{code: "wicket_reporter_unauthorized", ...}` |
 | `403` | The reporter is disabled via its settings-screen toggle. The endpoint reveals nothing about whether a key would otherwise be valid — this check runs before the API key is read. | `{code: "wicket_reporter_disabled", ...}` |
-| `429` | Rate limit exceeded — either the per-key bucket (120 requests / 60s) or the independent per-IP bucket (240 requests / 60s, a burst guard keyed on `REMOTE_ADDR` only). No `Retry-After` header today; the fixed 60-second window (see Caching above) is the only signal for how long to back off. | `{code: "wicket_reporter_rate_limited", ...}` |
+| `429` | Rate limit exceeded — the per-key bucket (30 requests / 60s), the independent per-IP bucket (30 requests / 60s, a burst guard keyed on `REMOTE_ADDR` only), or, on a forced-refresh request specifically, the separate per-key force-refresh bucket (1 request / 60s). No `Retry-After` header today; the fixed 60-second window (see Caching above) is the only signal for how long to back off. | `{code: "wicket_reporter_rate_limited", ...}` |
 | `503` | `wicket-wp-base-plugin` is unavailable (`wicket_reporter_unavailable`), **or** the cache is cold, a build is already in progress, and no stale copy exists to fall back on. | `{code: "wicket_reporter_unavailable", ...}` for the first case (no `Retry-After`); `{error: "status_generation_in_progress"}` for the second, **with** a `Retry-After: 5` header. |
 
 **Note on the package doc**: `packages/wicket-wp-reporter.md` in Atlas
