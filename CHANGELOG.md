@@ -5,6 +5,12 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 <!-- new releases inserted below this line -->
 
+## [1.1.2] - 2026-09-11
+
+### Other
+- Update README.md
+
+
 ## [1.1.1] - 2026-09-04
 
 ### Fixed
