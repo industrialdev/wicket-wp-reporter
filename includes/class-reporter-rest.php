@@ -480,8 +480,9 @@ class Reporter_Rest
      * site{} fields — see the plan's field-sourcing notes: site.id from a
      * sanitized home_url(), site.url from home_url() specifically (not
      * site_url(), which can diverge for a subdirectory WP install),
-     * site.name from get_bloginfo('name'), site.environment from
-     * wp_get_environment_type() unless the settings override is set.
+     * site.name from get_bloginfo('name', 'display') (entity-decoded —
+     * see get_site_info()), site.environment from wp_get_environment_type()
+     * unless the settings override is set.
      */
     /**
      * Every value the settings dropdown (Reporter_Settings::register_settings)
@@ -509,7 +510,12 @@ class Reporter_Rest
 
         return [
             'id'          => $site_id,
-            'name'        => get_bloginfo('name'),
+            // 'display' runs the raw blogname option through
+            // wptexturize()/convert_chars()/capital_P_dangit() and, most
+            // importantly here, decodes HTML entities — without it, a site
+            // name containing "&" is returned as the literal "&amp;" (WP
+            // stores/escapes it for template output, not for API payloads).
+            'name'        => get_bloginfo('name', 'display'),
             'url'         => home_url(),
             'environment' => $environment,
         ];
