@@ -5,6 +5,12 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 <!-- new releases inserted below this line -->
 
+## [1.1.3] - 2026-09-11
+
+### Fixed
+- lower REST rate limits to 30/30, add a separate force-refresh cap
+
+
 ## [1.1.2] - 2026-09-11
 
 ### Other
