@@ -5,6 +5,12 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 <!-- new releases inserted below this line -->
 
+## [1.1.4] - 2026-09-11
+
+### Fixed
+- claim REST auth for wicket-reporter/v1 before global auth plugins
+
+
 ## [1.1.3] - 2026-09-11
 
 ### Fixed
