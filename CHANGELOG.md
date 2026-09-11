@@ -5,6 +5,12 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 <!-- new releases inserted below this line -->
 
+## [1.1.5] - 2026-09-11
+
+### Fixed
+- decode HTML entities in reported site name
+
+
 ## [1.1.4] - 2026-09-11
 
 ### Fixed
