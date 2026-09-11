@@ -17,7 +17,7 @@ class Reporter_Rest
     private const ROUTE = '/status';
 
     /** Rate limit: max requests per key within the window below. */
-    private const RATE_LIMIT_MAX_REQUESTS = 120;
+    private const RATE_LIMIT_MAX_REQUESTS = 30;
     private const RATE_LIMIT_WINDOW_SECONDS = 60;
 
     /**
@@ -26,7 +26,16 @@ class Reporter_Rest
      * ceiling so it is a burst guard, not the binding limit in normal
      * operation — the per-key ceiling stays the real budget.
      */
-    private const RATE_LIMIT_MAX_REQUESTS_PER_IP = 240;
+    private const RATE_LIMIT_MAX_REQUESTS_PER_IP = 30;
+
+    /**
+     * Separate, much stricter cap for a forced refresh specifically — this
+     * bypasses both this plugin's own cache and the fleet monitor's, so
+     * each one is a full recompute, not a cached read. Per-key only: the
+     * fleet monitor is the one intended caller, with one key per site.
+     */
+    private const FORCE_REFRESH_RATE_LIMIT_MAX_REQUESTS = 1;
+    private const FORCE_REFRESH_RATE_LIMIT_WINDOW_SECONDS = 60;
 
     /** 8h flat TTL, matching the stack-wide caching policy. No early-bust hooks — TTL-only, by design. */
     private const CACHE_TTL_SECONDS = 8 * HOUR_IN_SECONDS;
@@ -128,6 +137,21 @@ class Reporter_Rest
             }
         }
 
+        // A forced refresh bypasses both this plugin's cache and the fleet
+        // monitor's — every one is a full recompute, so it gets its own,
+        // much stricter budget on top of the general limit above.
+        if ('' !== trim((string) $request->get_header(self::FORCE_REFRESH_HEADER))) {
+            $force_refresh_rate_limit_error = self::check_rate_limit(
+                'ratelimit_forcerefresh_' . md5($token),
+                self::FORCE_REFRESH_RATE_LIMIT_MAX_REQUESTS,
+                self::FORCE_REFRESH_RATE_LIMIT_WINDOW_SECONDS
+            );
+
+            if (null !== $force_refresh_rate_limit_error) {
+                return $force_refresh_rate_limit_error;
+            }
+        }
+
         return true;
     }
 
@@ -176,9 +200,10 @@ class Reporter_Rest
      *
      * @return WP_Error|null Error to return (429) if the limit is exceeded, else null.
      */
-    private static function check_rate_limit(string $bucket_key, int $max_requests): ?WP_Error
+    private static function check_rate_limit(string $bucket_key, int $max_requests, ?int $window_seconds = null): ?WP_Error
     {
-        $bucket = (int) floor(time() / self::RATE_LIMIT_WINDOW_SECONDS);
+        $window_seconds ??= self::RATE_LIMIT_WINDOW_SECONDS;
+        $bucket = (int) floor(time() / $window_seconds);
         $transient_key = WICKET_REPORTER_TRANSIENT_PREFIX . $bucket_key . '_' . $bucket;
         $count = (int) get_transient($transient_key);
 
@@ -192,7 +217,7 @@ class Reporter_Rest
             );
         }
 
-        set_transient($transient_key, $count + 1, self::RATE_LIMIT_WINDOW_SECONDS);
+        set_transient($transient_key, $count + 1, $window_seconds);
 
         return null;
     }
