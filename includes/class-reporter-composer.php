@@ -204,34 +204,6 @@ class Reporter_Composer
     }
 
     /**
-     * updateSource, resolved per the plan's three-source order:
-     * git (Wicket-authored) -> satispress (wicketpress/*) -> wordpress-org
-     * (wp-plugin/* or wpackagist-plugin/* — both proxy wordpress.org;
-     * this fleet's actual composer.json uses wp-plugin/* via
-     * repo.wp-packages.org, not the wpackagist-plugin/* the plan
-     * originally assumed, so both prefixes are matched here).
-     */
-    public static function resolve_update_source(string $composer_package_name, array $package): string
-    {
-        if (self::is_wicket_git_package($composer_package_name, $package)) {
-            return 'git';
-        }
-
-        if (str_starts_with($composer_package_name, 'wicketpress/')) {
-            return 'satispress';
-        }
-
-        if (str_starts_with($composer_package_name, 'wp-plugin/')
-            || str_starts_with($composer_package_name, 'wpackagist-plugin/')
-            || str_starts_with($composer_package_name, 'wpackagist-theme/')
-        ) {
-            return 'wordpress-org';
-        }
-
-        return 'unknown';
-    }
-
-    /**
      * Given a composer package name (e.g. 'wp-plugin/woocommerce') and its
      * `type`, returns the directory name Composer would have installed it
      * under (e.g. 'woocommerce') — the second path segment after the
