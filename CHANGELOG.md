@@ -5,6 +5,12 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 <!-- new releases inserted below this line -->
 
+## [1.1.6] - 2026-10-14
+
+### Changed
+- **composer:** remove dead resolve_update_source twin
+
+
 ## [1.1.5] - 2026-09-11
 
 ### Fixed
