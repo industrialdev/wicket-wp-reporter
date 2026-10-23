@@ -8,6 +8,10 @@ For architecture (boot sequence, API key generation, settings, REST endpoint, co
 
 Full design plan: `@see atlas://plans/feature-fleet-health-monitor.md` — read it before changing this plugin's schema, endpoint shape, or settings.
 
+## Documentation
+
+The Atlas knowledge base holds the full engineering and product documentation for the whole Wicket stack. Start at `@see atlas://packages/wicket-wp-reporter.md` for this package. The repo docs/ folder, when present, holds only public end-consumer guides; engineering material never lives beside the code.
+
 ## Development Commands
 
 ```bash
