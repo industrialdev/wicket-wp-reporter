@@ -5,6 +5,16 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 <!-- new releases inserted below this line -->
 
+## [1.1.7] - 2026-10-23
+
+### Documentation
+- point AGENTS.md at the atlas knowledge base rule
+- streamline AGENTS.md and move detail to atlas
+
+### Maintenance
+- **docs:** move engineering docs to atlas (A0012)
+
+
 ## [1.1.6] - 2026-10-14
 
 ### Changed
